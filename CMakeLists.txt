@@ -33,23 +33,21 @@ include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(libambix REQUIRED)
 
-include_directories (BEFORE ${LIBSNDFILE_INCLUDE_DIR})
+include_directories (BEFORE ${LIBAMBIX_INCLUDE_DIR})
 
 set (reaper_ambix_sources
 	${CMAKE_CURRENT_SOURCE_DIR}/src/libambixImport.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/wrapperclass.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp	
+	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsrc_ambix.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsink_ambix.cpp
 	)
 
-		
+
 add_library (reaper_ambix SHARED
 	${reaper_ambix_sources}
 	)
 
 SET_TARGET_PROPERTIES(reaper_ambix PROPERTIES PREFIX "")
-
-# linking not necessary - library loaded at runtime	
-# target_link_libraries (reaper_ambix libsndfile)
 
 IF(APPLE)
 	target_link_libraries (reaper_ambix ${CARBON_LIBRARY} ${COCOA_LIBRARY})
