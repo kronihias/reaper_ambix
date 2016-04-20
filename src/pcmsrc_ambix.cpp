@@ -103,6 +103,7 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
         if (ImportLibAmbixFunctions())
         {
             // loading libamibx/resolving functions failed
+            printf("Failed to load libambix!\n");
             return 0;
         }
         rec->Register("pcmsrc",&myRegStruct);

@@ -27,10 +27,13 @@ private:
     ambix_t *m_fh;
     ambix_info_t m_sfinfo;
     char *m_filename;
-    int m_isopened;
+
     double *m_audiordbuf;
     int m_nch, m_bps;
-    int m_ambichannels, m_xtrachannels;
+    int m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels;
+  
+    int m_order; // 3d ambisonic order
+  
     const ambix_matrix_t* m_matrix;
     double m_srate;
     INT64 m_lastpos;
