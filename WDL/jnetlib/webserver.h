@@ -1,6 +1,6 @@
 /*
 ** JNetLib
-** Copyright (C) 2008 Cockos Inc
+** Copyright (C) 2008-2014 Cockos Inc
 ** Copyright (C) 2003 Nullsoft, Inc.
 ** Author: Justin Frankel
 ** File: webserver.h - Generic simple webserver baseclass
@@ -73,6 +73,8 @@
 #define _JNL_WEBSERVER_H_
 
 #include "httpserv.h"
+#include "../wdlcstring.h"
+#include "../ptrlist.h"
 
 class IPageGenerator
 {
@@ -82,10 +84,6 @@ public:
   virtual int GetData(char *buf, int size)=0; // return < 0 when done (or 0 if IsNonBlocking() is 1)
 };
 
-
-
-class WS_ItemList;
-class WS_conInst;
 
 class WebServerBaseClass
 {
@@ -100,7 +98,7 @@ public:
   void setRequestTimeout(int timeout_s);
 
   // stuff for setting listener port
-  int addListenPort(int port, unsigned long which_interface=0);
+  int addListenPort(int port, unsigned int which_interface=0);
   int getListenPort(int idx, int *err=0);
   void removeListenPort(int port);
   void removeListenIdx(int idx);
@@ -119,15 +117,36 @@ public:
   // stats getting functions
 
   // these can be used externally, as well as are used by the web server
-  static void url_encode(char *in, char *out, int max_out);
-  static void url_decode(char *in, char *out, int maxlen);
-  static void base64decode(char *src, char *dest, int destsize);
-  static void base64encode(char *in, char *out);
+  static void url_encode(const char *in, char *out, int max_out);
+  static void url_decode(const char *in, char *out, int maxlen);
+  static void base64decode(const char *src, char *dest, int destsize);
+  static void base64encode(const char *in, char *out);
 
-  static int parseAuth(char *auth_header, char *out, int out_len);//returns 0 on unknown auth, 1 on basic
+  static int parseAuth(const char *auth_header, char *out, int out_len);//returns 0 on unknown auth, 1 on basic
 
 
-private:
+protected:
+
+  class WS_conInst
+  {
+  public:
+    WS_conInst(JNL_IConnection *c, int which_port) : m_serv(c), m_pagegen(NULL), m_port(which_port)
+    {
+      time(&m_connect_time);
+    }
+    ~WS_conInst()
+    {
+      delete m_pagegen;
+    }
+
+    // these will be used by WebServerBaseClass::onConnection yay
+    JNL_HTTPServ m_serv;
+    IPageGenerator *m_pagegen;
+
+    int m_port; // port this came in on
+    time_t m_connect_time;
+  };
+
   int run_connection(WS_conInst *con);
 
   int m_timeout_s;
@@ -135,9 +154,87 @@ private:
 
   JNL_AsyncDNS m_dns;
 
-  WS_ItemList *m_listeners;
+  WDL_PtrList<JNL_IListen> m_listeners;
+  WDL_PtrList<WS_conInst> m_connections;
   int m_listener_rot;
-  WS_ItemList *m_connections;
 };
+
+
+
+#ifdef JNETLIB_WEBSERVER_WANT_UTILS
+
+#include "../fileread.h"
+#include "../wdlstring.h"
+
+class JNL_FilePageGenerator : public IPageGenerator
+{
+  public:
+    JNL_FilePageGenerator(WDL_FileRead *fr) { m_file = fr; }
+    virtual ~JNL_FilePageGenerator() { delete m_file; }
+    virtual int GetData(char *buf, int size) { return m_file ? m_file->Read(buf,size) : -1; }
+
+  private:
+
+    WDL_FileRead *m_file;
+};
+class JNL_StringPageGenerator : public IPageGenerator
+{
+  public:
+    JNL_StringPageGenerator() { m_pos=0; }
+    virtual ~JNL_StringPageGenerator() { }
+    virtual int GetData(char *buf, int size) 
+    { 
+      if (size > str.GetLength() - m_pos) size=str.GetLength()-m_pos;
+      if (size>0) 
+      {
+        memcpy(buf,str.Get()+m_pos,size);
+        m_pos+=size;
+      }
+      return size; 
+    }
+
+    WDL_FastString str; // set this before sending it off
+
+  private:
+    int m_pos;
+};
+
+static void JNL_get_mime_type_for_file(const char *fn, char *strout, int stroutsz)
+{
+  const char *ext = fn;
+  while (*ext) ext++;
+  while (ext > fn && *ext != '.' && *ext != '/' && *ext != '\\') ext--;
+
+  const char *type = "application/octet-stream";
+
+  if (!stricmp(ext,".jpg")) type = "image/jpeg";
+  else if (!stricmp(ext,".png")) type = "image/png";
+  else if (!stricmp(ext,".gif")) type = "image/gif";
+  else if (!stricmp(ext,".html")) type = "text/html";
+  else if (!stricmp(ext,".txt")) type = "text/plain";
+  else if (!stricmp(ext,".js")) type = "application/x-javascript";
+
+  lstrcpyn_safe(strout,type,stroutsz);
+}
+
+static void JNL_Format_RFC1123(time_t t, char *buf)
+{
+
+  buf[0]=0;
+  static const char days[] = { "SunMonTueWedThuFriSat" };
+  static const char mons[] = { "JanFebMarAprMayJunJulAugSepOctNovDec" };
+
+  struct tm *tm =  gmtime(&t);
+  if (!tm) return;
+  memcpy(buf, days + (tm->tm_wday%7)*3, 3);
+  strcpy(buf+3,", ");
+  char *p=buf+5;
+  strftime(p, 64, "%d xxx %Y %H:%M:%S GMT", tm);
+  while (*p && *p != 'x') p++;
+  if (*p) memcpy(p, mons + (tm->tm_mon%12)*3, 3);
+}
+
+#endif //JNETLIB_WEBSERVER_WANT_UTILS
+
 
 #endif//_JNL_WEBSERVER_H_

@@ -27,71 +27,157 @@
 
 #import <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
+#import <CoreFoundation/CFDictionary.h>
+#import <objc/objc-runtime.h>
 #include "swell.h"
 #include "swell-internal.h"
 
 #include "../mutex.h"
+#include "../assocarray.h"
+#include "../wdlcstring.h"
 
-#ifndef __LP64__ 
-#define SWELL_NSSTRING_DRAWING 0  // face control works?
-#define SWELL_ATSUI_DRAWING 1 // faster
-#else
-#define SWELL_NSSTRING_DRAWING 1
-#define SWELL_ATSUI_DRAWING 0
+#ifdef __SSE__
+#include <xmmintrin.h>
 #endif
 
-// unsupported
-#define SWELL_HITDRAWING 0
-#define SWELL_CGDRAWING 0
+#ifdef SWELL_SUPPORT_OPENGL_BLIT
+#include <OpenGL/gl.h>
+#endif
 
+// reimplement here so that swell-gdi isn't dependent on swell-misc, and vice-versa
+static int SWELL_GDI_GetOSXVersion()
+{
+  static SInt32 v;
+  if (!v)
+  {
+    if (NSAppKitVersionNumber >= 1266.0) 
+    {
+      v=0x10a0; // 10.10+ Gestalt(gsv) return 0x109x, so we bump this to 0x10a0
+    }
+    else 
+    {
+      SInt32 a = 0x1040;
+      Gestalt(gestaltSystemVersion,&a);
+      v=a;
+    }
+  }
+  return v;
+}
+
+#ifdef __AVX__
+#include <immintrin.h>
+#endif
+
+#ifndef SWELL_NO_CORETEXT
+static bool IsCoreTextSupported()
+{
+#if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_5
+  return SWELL_GDI_GetOSXVersion() >= 0x1050 && CTFontCreateWithName && CTLineDraw && CTFramesetterCreateWithAttributedString && CTFramesetterCreateFrame && 
+         CTFrameGetLines && CTLineGetTypographicBounds && CTLineCreateWithAttributedString && CTFontCopyPostScriptName
+         ;
+#else
+  // targetting 10.5+, CT is always valid
+  return true;
+#endif
+}
+
+static CTFontRef GetCoreTextDefaultFont()
+{
+  static CTFontRef deffr;
+  static bool ok;
+  if (!ok)
+  {
+    ok=true;
+    if (IsCoreTextSupported())
+    {
+      deffr=(CTFontRef) [[NSFont labelFontOfSize:10.0] retain]; 
+    }
+  }
+  return deffr;
+}
+#endif // !SWELL_NO_CORETEXT
+  
+
+static NSString *CStringToNSString(const char *str)
+{
+  if (!str) str="";
+  NSString *ret;
+  
+  ret=(NSString *)CFStringCreateWithCString(NULL,str,kCFStringEncodingUTF8);
+  if (ret) return ret;
+  ret=(NSString *)CFStringCreateWithCString(NULL,str,kCFStringEncodingASCII);
+  return ret;
+}
+
+CGColorSpaceRef __GetDisplayColorSpace()
+{
+  static CGColorSpaceRef cs;
+  if (!cs)
+  {
+    // use monitor profile for 10.7+
+    if (SWELL_GDI_GetOSXVersion() >= 0x1070)
+    {
+
+#ifdef MAC_OS_X_VERSION_10_11
+      // OSX 10.11 SDK removes CMGetSystemProfile
+      // this may be preferable on older SDKs as well, need to test (though CGDisplayCopyColorSpace is only available on 10.5+)
+      cs = CGDisplayCopyColorSpace(CGMainDisplayID());
+#else
+      CMProfileRef systemMonitorProfile = NULL;
+      CMError getProfileErr = CMGetSystemProfile(&systemMonitorProfile);
+      if(noErr == getProfileErr)
+      {
+        cs = CGColorSpaceCreateWithPlatformColorSpace(systemMonitorProfile);
+        CMCloseProfile(systemMonitorProfile);
+      }
+#endif
+    }
+  }
+  if (!cs) 
+    cs = CGColorSpaceCreateDeviceRGB();
+  return cs;
+}
 
 static CGColorRef CreateColor(int col, float alpha=1.0f)
 {
-  static CGColorSpaceRef cspace;
-  
-  if (!cspace) cspace=CGColorSpaceCreateDeviceRGB();
-  
-  CGFloat cols[4]={GetRValue(col)/255.0,GetGValue(col)/255.0,GetBValue(col)/255.0,alpha};
-  CGColorRef color=CGColorCreate(cspace,cols);
+  CGFloat cols[4]={GetRValue(col)/255.0f,GetGValue(col)/255.0f,GetBValue(col)/255.0f,alpha};
+  CGColorRef color=CGColorCreate(__GetDisplayColorSpace(),cols);
   return color;
 }
 
-static WDL_Mutex m_ctxpool_mutex;
-static WDL_PtrList<GDP_CTX> m_ctxpool; // not threadsafe but fuck it I dont think anything is yet
 
-GDP_CTX *SWELL_GDP_CTX_NEW()
+#include "swell-gdi-internalpool.h"
+
+int SWELL_IsRetinaHWND(HWND hwnd)
 {
-  int ni=m_ctxpool.GetSize();
-  GDP_CTX *p=NULL;
-  if (ni>0)
+  if (!hwnd || SWELL_GDI_GetOSXVersion() < 0x1070) return 0;
+
+  NSWindow *w=NULL;
+  if ([(id)hwnd isKindOfClass:[NSView class]]) w = [(NSView *)hwnd window];
+  else if ([(id)hwnd isKindOfClass:[NSWindow class]]) w = (NSWindow *)hwnd;
+
+  if (w)
   {
-    m_ctxpool_mutex.Enter();
-    p=m_ctxpool.Get(ni-1);
-    if (p)
-    { 
-      m_ctxpool.Delete(ni-1);
-      memset(p,0,sizeof(GDP_CTX));
-    }
-    m_ctxpool_mutex.Leave();
+    NSRect r=NSMakeRect(0,0,1,1);
+    NSRect (*tmp)(id receiver, SEL operation, NSRect) = (NSRect (*)(id, SEL, NSRect))objc_msgSend_stret;
+    NSRect str = tmp(w,sel_getUid("convertRectToBacking:"),r);
+
+    if (str.size.width > 1.9) return 1;
   }
-  if (!p) p=(GDP_CTX *)calloc(sizeof(GDP_CTX),1);
-  return p;
+  return 0;
 }
-static void SWELL_GDP_CTX_DELETE(GDP_CTX *p)
+
+int SWELL_IsRetinaDC(HDC hdc)
 {
-  if (p && m_ctxpool.GetSize()<1024) 
-  {
-    m_ctxpool_mutex.Enter();
-    m_ctxpool.Add(p);
-    m_ctxpool_mutex.Leave();
-  }
-  else free(p);
+  HDC__ *src=(HDC__*)hdc;
+  if (!src || !HDC_VALID(src) || !src->ctx) return 0;
+  return CGContextConvertSizeToDeviceSpace((CGContextRef)src->ctx, CGSizeMake(1,1)).width > 1.9 ? 1 : 0;
 }
 
 
 HDC SWELL_CreateGfxContext(void *c)
 {
-  GDP_CTX *ctx=SWELL_GDP_CTX_NEW();
+  HDC__ *ctx=SWELL_GDP_CTX_NEW();
   NSGraphicsContext *nsc = (NSGraphicsContext *)c;
 //  if (![nsc isFlipped])
 //    nsc = [NSGraphicsContext graphicsContextWithGraphicsPort:[nsc graphicsPort] flipped:YES];
@@ -105,15 +191,18 @@ HDC SWELL_CreateGfxContext(void *c)
   return ctx;
 }
 
+#define ALIGN_EXTRA 63
+static void *ALIGN_FBUF(void *inbuf)
+{
+  const UINT_PTR extra = ALIGN_EXTRA;
+  return (void *) (((UINT_PTR)inbuf+extra)&~extra); 
+}
+
 HDC SWELL_CreateMemContext(HDC hdc, int w, int h)
 {
-  // we could use CGLayer here, but it's 10.4+ and seems to be slower than this
-//  if (w&1) w++;
-  void *buf=calloc(w*4,h);
+  void *buf=calloc(w*4*h+ALIGN_EXTRA,1);
   if (!buf) return 0;
-  CGColorSpaceRef cs=CGColorSpaceCreateDeviceRGB();
-  CGContextRef c=CGBitmapContextCreate(buf,w,h,8,w*4,cs, kCGImageAlphaNoneSkipFirst);
-  CGColorSpaceRelease(cs);
+  CGContextRef c=CGBitmapContextCreate(ALIGN_FBUF(buf),w,h,8,w*4,__GetDisplayColorSpace(), kCGImageAlphaNoneSkipFirst);
   if (!c)
   {
     free(buf);
@@ -125,7 +214,7 @@ HDC SWELL_CreateMemContext(HDC hdc, int w, int h)
   CGContextScaleCTM(c,1.0,-1.0);
 
 
-  GDP_CTX *ctx=SWELL_GDP_CTX_NEW();
+  HDC__ *ctx=SWELL_GDP_CTX_NEW();
   ctx->ctx=(CGContextRef)c;
   ctx->ownedData=buf;
   // CGContextSelectFont(ctx->ctx,"Arial",12.0,kCGEncodingMacRoman);
@@ -134,19 +223,17 @@ HDC SWELL_CreateMemContext(HDC hdc, int w, int h)
   return ctx;
 }
 
-
 void SWELL_DeleteGfxContext(HDC ctx)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (ct)
+  HDC__ *ct=(HDC__ *)ctx;
+  if (HDC_VALID(ct))
   {   
     if (ct->ownedData)
     {
       CGContextRelease(ct->ctx);
       free(ct->ownedData);
     }
-    if (ct->curtextcol) [ct->curtextcol release];
-    if (ct->curcgtextcol) CGColorRelease(ct->curcgtextcol);
+    if (ct->curtextcol) CFRelease(ct->curtextcol); 
     SWELL_GDP_CTX_DELETE(ct);
   }
 }
@@ -160,39 +247,11 @@ HBRUSH CreateSolidBrush(int col)
   return CreateSolidBrushAlpha(col,1.0f);
 }
 
-static WDL_PtrList<GDP_OBJECT> m_objpool;
-static GDP_OBJECT *GDP_OBJECT_NEW()
-{
-  int ni=m_objpool.GetSize();
-  GDP_OBJECT *p=NULL;
-  if (ni>0)
-  {
-    m_ctxpool_mutex.Enter();
-    p=m_objpool.Get(ni-1);
-    if (p)
-    {
-      m_objpool.Delete(ni-1);
-      memset(p,0,sizeof(GDP_OBJECT));
-    }
-    m_ctxpool_mutex.Leave();
-  }
-  if (!p) p=(GDP_OBJECT *)calloc(sizeof(GDP_OBJECT),1);    
-  return p;
-}
-static void GDP_OBJECT_DELETE(GDP_OBJECT *p)
-{
-  if (p && m_objpool.GetSize()<1024) 
-  {
-    m_ctxpool_mutex.Enter();
-    m_objpool.Add(p);
-    m_ctxpool_mutex.Leave();
-  }
-  else free(p);
-}
+
 
 HPEN CreatePenAlpha(int attr, int wid, int col, float alpha)
 {
-  GDP_OBJECT *pen=GDP_OBJECT_NEW();
+  HGDIOBJ__ *pen=GDP_OBJECT_NEW();
   pen->type=TYPE_PEN;
   pen->wid=wid<0?0:wid;
   pen->color=CreateColor(col,alpha);
@@ -200,96 +259,11 @@ HPEN CreatePenAlpha(int attr, int wid, int col, float alpha)
 }
 HBRUSH  CreateSolidBrushAlpha(int col, float alpha)
 {
-  GDP_OBJECT *brush=GDP_OBJECT_NEW();
+  HGDIOBJ__ *brush=GDP_OBJECT_NEW();
   brush->type=TYPE_BRUSH;
   brush->color=CreateColor(col,alpha);
   brush->wid=0; 
   return brush;
-}
-
-#define FONTSCALE 0.9
-HFONT CreateFont(long lfHeight, long lfWidth, long lfEscapement, long lfOrientation, long lfWeight, char lfItalic, 
-  char lfUnderline, char lfStrikeOut, char lfCharSet, char lfOutPrecision, char lfClipPrecision, 
-         char lfQuality, char lfPitchAndFamily, const char *lfFaceName)
-{
-  GDP_OBJECT *font=GDP_OBJECT_NEW();
-  font->type=TYPE_FONT;
-  float fontwid=lfHeight;
-  
-  
-  if (!fontwid) fontwid=lfWidth;
-  if (fontwid<0)fontwid=-fontwid;
-  
-  if (fontwid < 2 || fontwid > 8192) fontwid=10;
- 
-  
-  font->font_rotation = lfOrientation/10.0;
-#if SWELL_ATSUI_DRAWING
-  // need to use lfFaceName FMGetATSFontRefFromFont(
-  ATSUCreateStyle(&font->font_style);
-
-  ATSUFontID fontid=kATSUInvalidFontID;
-  if (lfFaceName && lfFaceName[0])
-  {
-    ATSUFindFontFromName(lfFaceName,strlen(lfFaceName),kFontFullName /* kFontFamilyName? */ ,(FontPlatformCode)kFontNoPlatform,kFontNoScriptCode,kFontNoLanguageCode,&fontid);
-//    if (fontid==kATSUInvalidFontID) printf("looked up %s and got %d\n",lfFaceName,fontid); // todo remove me
-  }
-  
-  {
-    Fixed fsize=Long2Fix(fontwid);
-    
-    Boolean isBold=lfWeight >= FW_BOLD;
-    Boolean isItal=!!lfItalic;
-    Boolean isUnder=!!lfUnderline;
-    
-    ATSUAttributeTag        theTags[] = { kATSUQDBoldfaceTag, kATSUQDItalicTag, kATSUQDUnderlineTag,kATSUSizeTag,kATSUFontTag };
-    ByteCount               theSizes[] = { sizeof(Boolean),sizeof(Boolean),sizeof(Boolean), sizeof(Fixed),sizeof(ATSUFontID)  };
-    ATSUAttributeValuePtr   theValues[] =  {&isBold, &isItal, &isUnder,  &fsize, &fontid  } ;
-
-    int attrcnt=sizeof(theTags)/sizeof(theTags[0]);
-    if (fontid == kATSUInvalidFontID) attrcnt--;
-    
-    
-    ATSUSetAttributes (font->font_style,                       
-                       attrcnt,                       
-                       theTags,                      
-                       theSizes,                      
-                       theValues);
-  }
-  
-#endif
-  
-#if SWELL_NSSTRING_DRAWING
-  
-  fontwid *= FONTSCALE;
-  NSString *str=(NSString *)SWELL_CStringToCFString(lfFaceName);
-  NSFont *nsf=[NSFont fontWithName:str size:fontwid];
-  [str release];
-  if (!nsf) nsf=[NSFont labelFontOfSize:fontwid];
-  if (!nsf) nsf=[NSFont systemFontOfSize:fontwid];
-
-  font->fontparagraphinfo = [[NSMutableParagraphStyle alloc] init];
-  font->fontdict=[NSMutableDictionary dictionaryWithObjectsAndKeys:font->fontparagraphinfo,NSParagraphStyleAttributeName,nsf,NSFontAttributeName, NULL];
-  [font->fontparagraphinfo release];
-  [font->fontdict retain];
-  
-  if (lfItalic) // italic
-  {
-    [font->fontdict setObject:[NSNumber numberWithFloat:0.33] forKey:NSObliquenessAttributeName];
-  }
-  if (lfUnderline)
-  {
-    [font->fontdict setObject:[NSNumber numberWithInt:NSUnderlineStyleSingle] forKey:NSUnderlineStyleAttributeName];
-  }
-  int weight=lfWeight;
-  if (weight>FW_SEMIBOLD)
-  {
-    double sc=40.0*(weight-FW_SEMIBOLD)/(1000-FW_SEMIBOLD);
-    if(sc>0.0)[font->fontdict setObject:[NSNumber numberWithFloat:-sc] forKey:NSStrokeWidthAttributeName];
-  }
-#endif
-  
-  return font;
 }
 
 
@@ -300,72 +274,77 @@ HFONT CreateFontIndirect(LOGFONT *lf)
                     lf->lfQuality, lf->lfPitchAndFamily, lf->lfFaceName);
 }
 
+static HGDIOBJ__ global_objs[2];
+
 void DeleteObject(HGDIOBJ pen)
 {
-  if (pen)
+  HGDIOBJ__ *p=(HGDIOBJ__ *)pen;
+  if (p >= global_objs && p < global_objs + sizeof(global_objs)/sizeof(global_objs[0])) return;
+
+  if (HGDIOBJ_VALID(p))
   {
-    GDP_OBJECT *p=(GDP_OBJECT *)pen;
-    if (p->type == TYPE_PEN || p->type == TYPE_BRUSH || p->type == TYPE_FONT || p->type == TYPE_BITMAP)
+    if (--p->additional_refcnt < 0)
     {
-      if (p->type == TYPE_PEN || p->type == TYPE_BRUSH)
-        if (p->wid<0) return;
-      if (p->color) CGColorRelease(p->color);
-      if (p->fontdict)
-        [(NSMutableDictionary*)p->fontdict release];
-      if (p->font_style) ATSUDisposeStyle(p->font_style);
-      if (p->wid && p->bitmapptr) [p->bitmapptr release]; 
-      GDP_OBJECT_DELETE(p);
+      if (p->type == TYPE_PEN || p->type == TYPE_BRUSH || p->type == TYPE_FONT || p->type == TYPE_BITMAP)
+      {
+        if (p->type == TYPE_PEN || p->type == TYPE_BRUSH)
+          if (p->wid<0) return;
+        if (p->color) CGColorRelease(p->color);
+
+        if (p->ct_FontRef) CFRelease(p->ct_FontRef);
+
+#ifdef SWELL_ATSUI_TEXT_SUPPORT
+        if (p->atsui_font_style) ATSUDisposeStyle(p->atsui_font_style);
+#endif
+
+        if (p->wid && p->bitmapptr) [p->bitmapptr release]; 
+        GDP_OBJECT_DELETE(p);
+      }
+      // JF> don't free unknown objects, this shouldn't ever happen anyway: else free(p);
     }
-    else free(p);
   }
 }
 
 
 HGDIOBJ SelectObject(HDC ctx, HGDIOBJ pen)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  GDP_OBJECT *p=(GDP_OBJECT*) pen;
-  GDP_OBJECT **mod=0;
-  if (!c||!p) return 0;
+  HDC__ *c=(HDC__ *)ctx;
+  HGDIOBJ__ *p=(HGDIOBJ__*) pen;
+  HGDIOBJ__ **mod=0;
+  if (!HDC_VALID(c)) return 0;
   
-  if (p == (GDP_OBJECT*)TYPE_PEN) mod=&c->curpen;
-  else if (p == (GDP_OBJECT*)TYPE_BRUSH) mod=&c->curbrush;
-  else if (p == (GDP_OBJECT*)TYPE_FONT) mod=&c->curfont;
+  if (p == (HGDIOBJ__*)TYPE_PEN) mod=&c->curpen;
+  else if (p == (HGDIOBJ__*)TYPE_BRUSH) mod=&c->curbrush;
+  else if (p == (HGDIOBJ__*)TYPE_FONT) mod=&c->curfont;
 
-  if (mod)
+  if (mod) // clearing a particular thing
   {
-    GDP_OBJECT *np=*mod;
+    HGDIOBJ__ *np=*mod;
     *mod=0;
-    return np?np:p;
+    return HGDIOBJ_VALID(np,(int)(INT_PTR)p)?np:p;
   }
 
+  if (!HGDIOBJ_VALID(p)) return 0;
   
   if (p->type == TYPE_PEN) mod=&c->curpen;
   else if (p->type == TYPE_BRUSH) mod=&c->curbrush;
   else if (p->type == TYPE_FONT) mod=&c->curfont;
-  else return 0;
   
-  GDP_OBJECT *op=*mod;
-  if (!op) op=(GDP_OBJECT*)p->type;
-  if (op != p)
-  {
-    *mod=p;
+  if (!mod) return 0;
   
-    if (p->type == TYPE_FONT)
-    {
-//      CGContextSelectFont(c->ctx,p->fontface,(float)p->wid,kCGEncodingMacRoman);
-    }
-  }
+  HGDIOBJ__ *op=*mod;
+  if (!HGDIOBJ_VALID(op,p->type)) op=(HGDIOBJ__*)(INT_PTR)p->type;
+  if (op != p) *mod=p;  
   return op;
 }
 
 
 
-void SWELL_FillRect(HDC ctx, RECT *r, HBRUSH br)
+void SWELL_FillRect(HDC ctx, const RECT *r, HBRUSH br)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  GDP_OBJECT *b=(GDP_OBJECT*) br;
-  if (!c || !b || b == (GDP_OBJECT*)TYPE_BRUSH || b->type != TYPE_BRUSH) return;
+  HDC__ *c=(HDC__ *)ctx;
+  HGDIOBJ__ *b=(HGDIOBJ__*) br;
+  if (!HDC_VALID(c) || !HGDIOBJ_VALID(b,TYPE_BRUSH) || b == (HGDIOBJ__*)TYPE_BRUSH || b->type != TYPE_BRUSH) return;
 
   if (b->wid<0) return;
   
@@ -397,41 +376,42 @@ void RoundRect(HDC ctx, int x, int y, int x2, int y2, int xrnd, int yrnd)
 
 void Ellipse(HDC ctx, int l, int t, int r, int b)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)) return;
   
   CGRect rect=CGRectMake(l,t,r-l,b-t);
   
-  if (c->curbrush && c->curbrush->wid >=0)
+  if (HGDIOBJ_VALID(c->curbrush,TYPE_BRUSH) && c->curbrush->wid >=0)
   {
     CGContextSetFillColorWithColor(c->ctx,c->curbrush->color);
     CGContextFillEllipseInRect(c->ctx,rect);	
   }
-  if (c->curpen && c->curpen->wid >= 0)
+  if (HGDIOBJ_VALID(c->curpen,TYPE_PEN) && c->curpen->wid >= 0)
   {
     CGContextSetStrokeColorWithColor(c->ctx,c->curpen->color);
-    CGContextStrokeEllipseInRect(c->ctx, rect); //, (float)max(1,c->curpen->wid));
+    CGContextStrokeEllipseInRect(c->ctx, rect); //, (float)wdl_max(1,c->curpen->wid));
   }
 }
 
 void Rectangle(HDC ctx, int l, int t, int r, int b)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)) return;
   
   CGRect rect=CGRectMake(l,t,r-l,b-t);
   
-  if (c->curbrush && c->curbrush->wid >= 0)
+  if (HGDIOBJ_VALID(c->curbrush,TYPE_BRUSH) && c->curbrush->wid >= 0)
   {
     CGContextSetFillColorWithColor(c->ctx,c->curbrush->color);
     CGContextFillRect(c->ctx,rect);	
   }
-  if (c->curpen && c->curpen->wid >= 0)
+  if (HGDIOBJ_VALID(c->curpen,TYPE_PEN) && c->curpen->wid >= 0)
   {
     CGContextSetStrokeColorWithColor(c->ctx,c->curpen->color);
-    CGContextStrokeRectWithWidth(c->ctx, rect, (float)max(1,c->curpen->wid));
+    CGContextStrokeRectWithWidth(c->ctx, rect, (float)wdl_max(1,c->curpen->wid));
   }
 }
+
 
 HGDIOBJ GetStockObject(int wh)
 {
@@ -439,17 +419,17 @@ HGDIOBJ GetStockObject(int wh)
   {
     case NULL_BRUSH:
     {
-      static GDP_OBJECT br={0,};
-      br.type=TYPE_BRUSH;
-      br.wid=-1;
-      return &br;
+      HGDIOBJ__ *p = &global_objs[0];
+      p->type=TYPE_BRUSH;
+      p->wid=-1;
+      return p;
     }
     case NULL_PEN:
     {
-      static GDP_OBJECT pen={0,};
-      pen.type=TYPE_PEN;
-      pen.wid=-1;
-      return &pen;
+      HGDIOBJ__ *p = &global_objs[1];
+      p->type=TYPE_PEN;
+      p->wid=-1;
+      return p;
     }
   }
   return 0;
@@ -457,9 +437,9 @@ HGDIOBJ GetStockObject(int wh)
 
 void Polygon(HDC ctx, POINT *pts, int npts)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c) return;
-  if (((!c->curbrush||c->curbrush->wid<0) && (!c->curpen||c->curpen->wid<0)) || npts<2) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)) return;
+  if (((!HGDIOBJ_VALID(c->curbrush,TYPE_BRUSH)||c->curbrush->wid<0) && (!HGDIOBJ_VALID(c->curpen,TYPE_PEN)||c->curpen->wid<0)) || npts<2) return;
 
   CGContextBeginPath(c->ctx);
   CGContextMoveToPoint(c->ctx,(float)pts[0].x,(float)pts[0].y);
@@ -468,22 +448,22 @@ void Polygon(HDC ctx, POINT *pts, int npts)
   {
     CGContextAddLineToPoint(c->ctx,(float)pts[x].x,(float)pts[x].y);
   }
-  if (c->curbrush && c->curbrush->wid >= 0)
+  if (HGDIOBJ_VALID(c->curbrush,TYPE_BRUSH) && c->curbrush->wid >= 0)
   {
     CGContextSetFillColorWithColor(c->ctx,c->curbrush->color);
   }
-  if (c->curpen && c->curpen->wid>=0)
+  if (HGDIOBJ_VALID(c->curpen,TYPE_PEN) && c->curpen->wid>=0)
   {
-    CGContextSetLineWidth(c->ctx,(float)max(c->curpen->wid,1));
+    CGContextSetLineWidth(c->ctx,(float)wdl_max(c->curpen->wid,1));
     CGContextSetStrokeColorWithColor(c->ctx,c->curpen->color);	
   }
-  CGContextDrawPath(c->ctx,c->curpen && c->curpen->wid>=0 && c->curbrush && c->curbrush->wid>=0 ?  kCGPathFillStroke : c->curpen && c->curpen->wid>=0 ? kCGPathStroke : kCGPathFill);
+  CGContextDrawPath(c->ctx,HGDIOBJ_VALID(c->curpen,TYPE_PEN) && c->curpen->wid>=0 && HGDIOBJ_VALID(c->curbrush,TYPE_BRUSH) && c->curbrush->wid>=0 ?  kCGPathFillStroke : HGDIOBJ_VALID(c->curpen,TYPE_PEN) && c->curpen->wid>=0 ? kCGPathStroke : kCGPathFill);
 }
 
 void MoveToEx(HDC ctx, int x, int y, POINT *op)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)) return;
   if (op) 
   { 
     op->x = (int) (c->lastpos_x);
@@ -495,10 +475,10 @@ void MoveToEx(HDC ctx, int x, int y, POINT *op)
 
 void PolyBezierTo(HDC ctx, POINT *pts, int np)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c||!c->curpen||c->curpen->wid<0||np<3) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)||!HGDIOBJ_VALID(c->curpen,TYPE_PEN)||c->curpen->wid<0||np<3) return;
   
-  CGContextSetLineWidth(c->ctx,(float)max(c->curpen->wid,1));
+  CGContextSetLineWidth(c->ctx,(float)wdl_max(c->curpen->wid,1));
   CGContextSetStrokeColorWithColor(c->ctx,c->curpen->color);
 	
   CGContextBeginPath(c->ctx);
@@ -520,17 +500,18 @@ void PolyBezierTo(HDC ctx, POINT *pts, int np)
 
 void SWELL_LineTo(HDC ctx, int x, int y)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c||!c->curpen||c->curpen->wid<0) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)||!HGDIOBJ_VALID(c->curpen,TYPE_PEN)||c->curpen->wid<0) return;
 
-  CGContextSetLineWidth(c->ctx,(float)max(c->curpen->wid,1));
+  float w = (float)wdl_max(c->curpen->wid,1);
+  CGContextSetLineWidth(c->ctx,w);
   CGContextSetStrokeColorWithColor(c->ctx,c->curpen->color);
 	
   CGContextBeginPath(c->ctx);
-  CGContextMoveToPoint(c->ctx,c->lastpos_x,c->lastpos_y);
+  CGContextMoveToPoint(c->ctx,c->lastpos_x + w * 0.5,c->lastpos_y + w*0.5);
   float fx=(float)x,fy=(float)y;
   
-  CGContextAddLineToPoint(c->ctx,fx,fy);
+  CGContextAddLineToPoint(c->ctx,fx+w*0.5,fy+w*0.5);
   c->lastpos_x=fx;
   c->lastpos_y=fy;
   CGContextStrokePath(c->ctx);
@@ -538,10 +519,11 @@ void SWELL_LineTo(HDC ctx, int x, int y)
 
 void PolyPolyline(HDC ctx, POINT *pts, DWORD *cnts, int nseg)
 {
-  GDP_CTX *c=(GDP_CTX *)ctx;
-  if (!c||!c->curpen||c->curpen->wid<0||nseg<1) return;
+  HDC__ *c=(HDC__ *)ctx;
+  if (!HDC_VALID(c)||!HGDIOBJ_VALID(c->curpen,TYPE_PEN)||c->curpen->wid<0||nseg<1) return;
 
-  CGContextSetLineWidth(c->ctx,(float)max(c->curpen->wid,1));
+  float w = (float)wdl_max(c->curpen->wid,1);
+  CGContextSetLineWidth(c->ctx,w);
   CGContextSetStrokeColorWithColor(c->ctx,c->curpen->color);
 	
   CGContextBeginPath(c->ctx);
@@ -552,12 +534,12 @@ void PolyPolyline(HDC ctx, POINT *pts, DWORD *cnts, int nseg)
     if (!cnt) continue;
     if (!--cnt) { pts++; continue; }
     
-    CGContextMoveToPoint(c->ctx,(float)pts->x,(float)pts->y);
+    CGContextMoveToPoint(c->ctx,(float)pts->x+w*0.5,(float)pts->y+w*0.5);
     pts++;
     
     while (cnt--)
     {
-      CGContextAddLineToPoint(c->ctx,(float)pts->x,(float)pts->y);
+      CGContextAddLineToPoint(c->ctx,(float)pts->x+w*0.5,(float)pts->y+w*0.5);
       pts++;
     }
   }
@@ -565,33 +547,175 @@ void PolyPolyline(HDC ctx, POINT *pts, DWORD *cnts, int nseg)
 }
 void *SWELL_GetCtxGC(HDC ctx)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return 0;
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return 0;
   return ct->ctx;
 }
 
 
 void SWELL_SetPixel(HDC ctx, int x, int y, int c)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return;
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return;
   CGContextBeginPath(ct->ctx);
-  CGContextMoveToPoint(ct->ctx,(float)x,(float)y);
+  CGContextMoveToPoint(ct->ctx,(float)x-0.5,(float)y-0.5);
   CGContextAddLineToPoint(ct->ctx,(float)x+0.5,(float)y+0.5);
-  CGContextSetLineWidth(ct->ctx,(float)1.5);
+  CGContextSetLineWidth(ct->ctx,(float)1.0);
   CGContextSetRGBStrokeColor(ct->ctx,GetRValue(c)/255.0,GetGValue(c)/255.0,GetBValue(c)/255.0,1.0);
   CGContextStrokePath(ct->ctx);	
 }
 
 
-#if SWELL_NSSTRING_DRAWING
+static WDL_Mutex s_fontnamecache_mutex;
 
+#ifdef SWELL_CLEANUP_ON_UNLOAD
+static void releaseString(NSString *s) { [s release]; }
+#endif
+static WDL_StringKeyedArray<NSString *> s_fontnamecache(true,
+#ifdef SWELL_CLEANUP_ON_UNLOAD
+      releaseString
+#else
+      NULL
+#endif
+      );
 
+static NSString *SWELL_GetCachedFontName(const char *nm)
+{
+  NSString *ret = NULL;
+  if (nm && *nm)
+  {
+    s_fontnamecache_mutex.Enter();
+    ret = s_fontnamecache.Get(nm);
+    s_fontnamecache_mutex.Leave();
+    if (!ret)
+    {
+      ret = CStringToNSString(nm);
+      if (ret)
+      {
+#ifndef SWELL_NO_CORETEXT
+        // only do postscript name lookups on 10.9+
+        if (floor(NSFoundationVersionNumber) > 945.00) // NSFoundationVersionNumber10_8
+        {
+          NSFont *font = [NSFont fontWithName:ret size:10];
+          NSString *nr = font ? (NSString *)CTFontCopyPostScriptName((CTFontRef)font) : NULL;
+          if (nr) 
+          {
+            [ret release];
+            ret = nr;
+          }
+        }
+#endif
+
+        s_fontnamecache_mutex.Enter();
+        s_fontnamecache.Insert(nm,ret);
+        s_fontnamecache_mutex.Leave();
+      }
+    }
+  }
+  return ret ? ret : @"";
+}
+
+HFONT CreateFont(int lfHeight, int lfWidth, int lfEscapement, int lfOrientation, int lfWeight, char lfItalic, 
+                 char lfUnderline, char lfStrikeOut, char lfCharSet, char lfOutPrecision, char lfClipPrecision, 
+                 char lfQuality, char lfPitchAndFamily, const char *lfFaceName)
+{
+  HGDIOBJ__ *font=GDP_OBJECT_NEW();
+  font->type=TYPE_FONT;
+  float fontwid=lfHeight;
+  
+  if (!fontwid) fontwid=lfWidth;
+  if (fontwid<0)fontwid=-fontwid;
+  
+  if (fontwid < 2 || fontwid > 8192) fontwid=10;
+  
+  font->font_rotation = lfOrientation/10.0;
+
+#ifndef SWELL_NO_CORETEXT
+  if (IsCoreTextSupported())
+  {
+    char buf[1024];
+    lstrcpyn_safe(buf,lfFaceName,900);
+    if (lfWeight >= FW_BOLD) strcat(buf," Bold");
+    if (lfItalic) strcat(buf," Italic");
+
+    font->ct_FontRef = (void*)CTFontCreateWithName((CFStringRef)SWELL_GetCachedFontName(buf),fontwid,NULL);
+    if (!font->ct_FontRef) font->ct_FontRef = (void*)[[NSFont labelFontOfSize:fontwid] retain]; 
+
+    // might want to make this conditional (i.e. only return font if created successfully), but I think we'd rather fallback to a system font than use ATSUI
+    return font;
+  }
+#endif
+  
+#ifdef SWELL_ATSUI_TEXT_SUPPORT
+  ATSUFontID fontid=kATSUInvalidFontID;
+  if (lfFaceName && lfFaceName[0])
+  {
+    ATSUFindFontFromName(lfFaceName,strlen(lfFaceName),kFontFullName /* kFontFamilyName? */ ,(FontPlatformCode)kFontNoPlatform,kFontNoScriptCode,kFontNoLanguageCode,&fontid);
+    //    if (fontid==kATSUInvalidFontID) printf("looked up %s and got %d\n",lfFaceName,fontid);
+  }
+  
+  if (ATSUCreateStyle(&font->atsui_font_style) == noErr && font->atsui_font_style)
+  {    
+    Fixed fsize=Long2Fix(fontwid);
+    
+    Boolean isBold=lfWeight >= FW_BOLD;
+    Boolean isItal=!!lfItalic;
+    Boolean isUnder=!!lfUnderline;
+    
+    ATSUAttributeTag        theTags[] = { kATSUQDBoldfaceTag, kATSUQDItalicTag, kATSUQDUnderlineTag,kATSUSizeTag,kATSUFontTag };
+    ByteCount               theSizes[] = { sizeof(Boolean),sizeof(Boolean),sizeof(Boolean), sizeof(Fixed),sizeof(ATSUFontID)  };
+    ATSUAttributeValuePtr   theValues[] =  {&isBold, &isItal, &isUnder,  &fsize, &fontid  } ;
+    
+    int attrcnt=sizeof(theTags)/sizeof(theTags[0]);
+    if (fontid == kATSUInvalidFontID) attrcnt--;    
+    
+    if (ATSUSetAttributes (font->atsui_font_style,                       
+                       attrcnt,                       
+                       theTags,                      
+                       theSizes,                      
+                       theValues)!=noErr)
+    {
+      ATSUDisposeStyle(font->atsui_font_style);
+      font->atsui_font_style=0;
+    }
+  }
+  else
+    font->atsui_font_style=0;
+  
+#endif
+  
+  
+  return font;
+}
+
+int GetTextFace(HDC ctx, int nCount, LPTSTR lpFaceName)
+{
+  HDC__ *ct=(HDC__*)ctx;
+  if (!HDC_VALID(ct) || !nCount || !lpFaceName) return 0;
+  
+#ifndef SWELL_NO_CORETEXT
+  CTFontRef fr=NULL;
+  if (HGDIOBJ_VALID(ct->curfont,TYPE_FONT)) fr=(CTFontRef)ct->curfont->ct_FontRef;
+  if (!fr)  fr=GetCoreTextDefaultFont();
+  
+  if (fr)
+  {
+    CFStringRef name=CTFontCopyDisplayName(fr);
+    const char* p=[(NSString*)name UTF8String];
+    if (p)
+    {
+      lstrcpyn_safe(lpFaceName, p, nCount);
+      return strlen(lpFaceName);
+    }
+  }
+#endif
+  
+  return 0;
+}
 
 BOOL GetTextMetrics(HDC ctx, TEXTMETRIC *tm)
 {
-  // what the fuck.
-  GDP_CTX *ct=(GDP_CTX *)ctx;
+  HDC__ *ct=(HDC__ *)ctx;
   if (tm) // give some sane defaults
   {
     tm->tmInternalLeading=3;
@@ -600,340 +724,116 @@ BOOL GetTextMetrics(HDC ctx, TEXTMETRIC *tm)
     tm->tmHeight=16;
     tm->tmAveCharWidth = 10;
   }
-  if (!ct||!tm) return 0;
-  
-  NSFont *curfont=NULL;
-  
-  if (ct->curfont && ct->curfont->fontdict)
-  {
-    curfont=[ct->curfont->fontdict objectForKey:NSFontAttributeName];
-  }
-  if (!curfont) curfont = [NSFont systemFontOfSize:10]; 
-  
-  
-  float asc=[curfont ascender];
-  float desc=-[curfont descender];
-  float leading=[curfont leading];
-  float ch=[curfont capHeight];
-  
-  tm->tmAscent = (int)ceil(asc);
-  tm->tmDescent = (int)ceil(desc);
-  tm->tmInternalLeading=(int)(asc - ch);
-  tm->tmHeight=(int) ceil(asc+desc+leading);
-  tm->tmAveCharWidth = (int) ceil([curfont boundingRectForFont].size.width);
-  
-  
-  //  tm->tmAscent += tm->tmDescent;
-  return 1;
-}
+  if (!HDC_VALID(ct)||!tm) return 0;
 
+  bool curfont_valid=HGDIOBJ_VALID(ct->curfont,TYPE_FONT);
 
-int DrawText(HDC ctx, const char *buf, int buflen, RECT *r, int align)
-{
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return 0;
-  
-  char tmp[4096];
-  const char *p=buf;
-  char *op=tmp;
-  while (*p && (op-tmp)<sizeof(tmp)-1 && (buflen<0 || (p-buf)<buflen))
+#ifdef SWELL_ATSUI_TEXT_SUPPORT
+  if (curfont_valid && ct->curfont->atsui_font_style)
   {
-    if (*p == '&' && !(align&DT_NOPREFIX)) p++; 
-    else if (*p == '\r')  p++; 
-    else if (*p == '\n' && (align&DT_SINGLELINE)) { *op++ = ' '; p++; }
-    else *op++=*p++;
-  }
-  *op=0;
-  
-  // NSString, attributes based text drawing
-  
-  NSMutableDictionary *dict=NULL;
-  NSMutableParagraphStyle *parinfo=NULL;
-  
-  if (ct->curfont) 
-  {
-    dict=ct->curfont->fontdict;
-    parinfo=ct->curfont->fontparagraphinfo;
-  }
-  
-  if (!dict||!parinfo) 
-  {
-    static NSMutableParagraphStyle *dp;
-    static NSMutableDictionary *dd;
-    if (!dd) 
-    {
-      dp=[[NSMutableParagraphStyle alloc] init];
-      dd=[NSMutableDictionary dictionaryWithObjectsAndKeys:dp,NSParagraphStyleAttributeName,[NSFont systemFontOfSize:10],NSFontAttributeName, NULL];
-      [dd retain];
-    }
-    parinfo=dp;
-    dict=dd;
+    ATSUTextMeasurement ascent=Long2Fix(10);
+    ATSUTextMeasurement descent=Long2Fix(3);
+    ATSUTextMeasurement sz=Long2Fix(0);
+    ATSUTextMeasurement width =Long2Fix(12);
+    ATSUGetAttribute(ct->curfont->atsui_font_style,  kATSUAscentTag, sizeof(ATSUTextMeasurement), &ascent,NULL);
+    ATSUGetAttribute(ct->curfont->atsui_font_style,  kATSUDescentTag, sizeof(ATSUTextMeasurement), &descent,NULL);
+    ATSUGetAttribute(ct->curfont->atsui_font_style,  kATSUSizeTag, sizeof(ATSUTextMeasurement), &sz,NULL);
+    ATSUGetAttribute(ct->curfont->atsui_font_style, kATSULineWidthTag, sizeof(ATSUTextMeasurement),&width,NULL);
     
-    if (!dd) return 0;
-  }
-  
-  
-  if (ct->curbkmode==OPAQUE)
-  {
-    NSColor *bkcol=[NSColor colorWithCalibratedRed:GetRValue(ct->curbkcol)/255.0f green:GetGValue(ct->curbkcol)/255.0f blue:GetBValue(ct->curbkcol)/255.0f alpha:1.0f];
-    [dict setObject:bkcol forKey:NSBackgroundColorAttributeName];
-  }   
-  else
-  {
-    [dict removeObjectForKey:NSBackgroundColorAttributeName];
-  }
-  if (ct->curtextcol)
-    [dict setObject:ct->curtextcol forKey:NSForegroundColorAttributeName];
-  
-  
-  NSString *str=(NSString*)SWELL_CStringToCFString(tmp);
-  
-  
-  if (parinfo)
-  {
-    [parinfo setAlignment:((align&DT_RIGHT)?NSRightTextAlignment : (align&DT_CENTER) ? NSCenterTextAlignment : NSLeftTextAlignment)];
-    [parinfo setLineBreakMode:((align&DT_END_ELLIPSIS)? NSLineBreakByTruncatingTail:NSLineBreakByClipping)];
-  }
-  
-  
-  
-  NSGraphicsContext *gc=NULL,*oldgc=NULL;
-  if (ct->ctx != [[NSGraphicsContext currentContext] graphicsPort])
-  {
-    gc=[NSGraphicsContext graphicsContextWithGraphicsPort:ct->ctx flipped:YES];
-    oldgc=[NSGraphicsContext currentContext];
-    [NSGraphicsContext setCurrentContext:gc];
-  }
-  
-  NSSize sz={0,0};//[as size];
-  NSRect rsz=[str boundingRectWithSize:sz options:NSStringDrawingUsesDeviceMetrics attributes:dict];
-  sz=rsz.size;
-  
-  int ret=10;
-  if (align & DT_CALCRECT)
-  {
-    r->right=r->left+ceil(sz.width);
-    r->bottom=r->top+ceil(sz.height)+1;
-    ret=ceil(sz.height);
-  }
-  else
-  {
-    ret=ceil(sz.height);
-    NSRect drawr=NSMakeRect(r->left,r->top,r->right-r->left,r->bottom-r->top);
-    if (align&DT_BOTTOM)
-    {
-      float dy=(drawr.size.height-sz.height);
-      drawr.origin.y += dy;
-      drawr.size.height -= dy;      
-    }
-    else if (align&DT_VCENTER)
-    {
-      float dy=((int)(drawr.size.height-sz.height ))/2;
-      drawr.origin.y += dy;
-      drawr.size.height -= dy*2.0;
-    }
-    else
-    {
-      drawr.size.height=sz.height;
-    }
-  	drawr.origin.y+=sz.height;
+    float asc=Fix2X(ascent);
+    float desc=Fix2X(descent);
+    float size = Fix2X(sz);
     
-    if (align & DT_NOCLIP) // no clip, grow drawr if necessary (preserving alignment)
-    {
-      if (drawr.size.width < sz.width)
-      {
-        if (align&DT_RIGHT) drawr.origin.x -= (sz.width-drawr.size.width);
-        else if (align&DT_CENTER) drawr.origin.x -= (sz.width-drawr.size.width)/2;
-        drawr.size.width=sz.width;
-      }
-      if (drawr.size.height < sz.height)
-      {
-        if (align&DT_BOTTOM) drawr.origin.y -= (sz.height-drawr.size.height);
-        else if (align&DT_VCENTER) drawr.origin.y -= (sz.height-drawr.size.height)/2;
-        drawr.size.height=sz.height;
-      }
-    }
-    [str drawWithRect:drawr options:NSStringDrawingUsesDeviceMetrics attributes:dict];
+    if (size < (asc+desc)*0.2) size=asc+desc;
+            
+    tm->tmAscent = (int)ceil(asc);
+    tm->tmDescent = (int)ceil(desc);
+    tm->tmInternalLeading=(int)ceil(asc+desc-size);
+    if (tm->tmInternalLeading<0)tm->tmInternalLeading=0;
+    tm->tmHeight=(int) ceil(asc+desc);
+    tm->tmAveCharWidth = (int) (ceil(asc+desc)*0.65); // (int)ceil(Fix2X(width));
     
+    return 1;
   }
-  
-  if (gc)
-  {
-    [NSGraphicsContext setCurrentContext:oldgc];
-    //      [gc release];
-  }
-  
-  [str release];
-  
-  return ret;
-}
-#endif // NSSTRING_DRAWING
-  
-#if SWELL_HITDRAWING
+#endif
 
-int DrawText(HDC ctx, const char *buf, int buflen, RECT *r, int align)
-{
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return 0;
+#ifndef SWELL_NO_CORETEXT
+  CTFontRef fr = curfont_valid ? (CTFontRef)ct->curfont->ct_FontRef : NULL;
+  if (!fr)  fr=GetCoreTextDefaultFont();
 
-  CFStringRef label=(CFStringRef)SWELL_CStringToCFString(buf); 
-  HIRect hiBounds = { {r->left, r->top}, {r->right-r->left, r->bottom-r->top} };
-  HIThemeTextInfo textInfo = {0, kThemeStateActive, kThemeCurrentPortFont, kHIThemeTextHorizontalFlushLeft, 
-	  kHIThemeTextVerticalFlushTop, kHIThemeTextBoxOptionStronglyVertical, kHIThemeTextTruncationEnd, 1, false};
-  
-//  if (ct->curfont && ct->curfont->wid <= 12) 
-    textInfo.fontID=kThemeMiniSystemFont;
-  //else if (ct->curfont->wid < 14) textInfo.fontID=kThemeLabelFont; 
-  //else if (ct->curfont->wid <= 16) textInfo.fontID=kThemeSmallSystemFont;
-//  else textInfo.fontID=kThemeSystemFont;
-  
-  if (align & DT_CENTER) textInfo.horizontalFlushness=kHIThemeTextHorizontalFlushCenter;
-  else if (align&DT_RIGHT) textInfo.horizontalFlushness=kHIThemeTextHorizontalFlushRight;
-  if (align & DT_VCENTER) textInfo.verticalFlushness=kHIThemeTextVerticalFlushCenter;
-  else if (align&DT_BOTTOM) textInfo.verticalFlushness=kHIThemeTextVerticalFlushBottom;
-	
-  float h;
-  if (align & DT_CALCRECT)
+  if (fr)
   {
-    float w=r->right-r->left;
-    h=r->bottom-r->top;
-    HIThemeGetTextDimensions(label,0,&textInfo,&w,&h,NULL);
-    r->right=r->left+(int)w;
-    r->bottom=r->top+(int)h;
-  }
-  else
-  {
-    if (ct->curcgtextcol) CGContextSetFillColorWithColor(ct->ctx,ct->curcgtextcol);
+    tm->tmInternalLeading = CTFontGetLeading(fr);
+    tm->tmAscent = CTFontGetAscent(fr);
+    tm->tmDescent = CTFontGetDescent(fr);
+    tm->tmHeight = (tm->tmInternalLeading + tm->tmAscent + tm->tmDescent);
+    tm->tmAveCharWidth = tm->tmHeight*2/3; // todo
+
+    if (tm->tmHeight)  tm->tmHeight++;
     
-    if (!(align&DT_SINGLELINE))
-    {
-      textInfo.truncationMaxLines=30;
-    }
-    HIThemeDrawTextBox(label, &hiBounds, &textInfo, ct->ctx, kHIThemeOrientationNormal);
-    float w=r->right-r->left;
-    h=r->bottom-r->top;
-    HIThemeGetTextDimensions(label,0,&textInfo,&w,&h,NULL);
-    return (int)ceil(h);
+    return 1;
   }
-  CFRelease(label);
-  
-  return h;
-}
+#endif
 
-#endif//SWELL_HITDRAWING
-  
-  
-
-#if SWELL_ATSUI_DRAWING
-
-
-
-BOOL GetTextMetrics(HDC ctx, TEXTMETRIC *tm)
-{
-  // what the fuck.
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (tm) // give some sane defaults
-  {
-    tm->tmInternalLeading=3;
-    tm->tmAscent=12;
-    tm->tmDescent=4;
-    tm->tmHeight=16;
-    tm->tmAveCharWidth=12;
-  }
-  if (!ct||!tm||!ct->curfont||!ct->curfont->font_style) return 0;
-  
-
-  ATSUTextMeasurement ascent=Long2Fix(10);
-  ATSUTextMeasurement descent=Long2Fix(3);
-  ATSUTextMeasurement leading=Long2Fix(3);
-  ATSUTextMeasurement width =Long2Fix(12);
-  ATSUGetAttribute(ct->curfont->font_style,  kATSUAscentTag, sizeof(ATSUTextMeasurement), &ascent,NULL);
-  ATSUGetAttribute(ct->curfont->font_style,  kATSUDescentTag, sizeof(ATSUTextMeasurement), &descent,NULL);
-  ATSUGetAttribute(ct->curfont->font_style,  kATSULeadingTag, sizeof(ATSUTextMeasurement), &leading,NULL);
-  ATSUGetAttribute(ct->curfont->font_style, kATSULineWidthTag, sizeof(ATSUTextMeasurement),&width,NULL);
-  
-  float asc=Fix2X(ascent);
-  float desc=Fix2X(descent);
-  float lead = Fix2X(leading);
-  
-  tm->tmAscent = (int)ceil(asc);
-  tm->tmDescent = (int)ceil(desc);
-  tm->tmInternalLeading=(int)(lead);
-  tm->tmHeight=(int) ceil(asc+desc+lead);
-  tm->tmAveCharWidth = (int) (ceil(asc+desc+lead)*0.75); // (int)ceil(Fix2X(width));
   
   return 1;
 }
 
 
 
-int DrawText(HDC ctx, const char *buf, int buflen, RECT *r, int align)
+#ifdef SWELL_ATSUI_TEXT_SUPPORT
+
+static int DrawTextATSUI(HDC ctx, CFStringRef strin, RECT *r, int align, bool *err)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return 0;
-  
-  char tmp[4096];
-  const char *p=buf;
-  char *op=tmp;
-  while (*p && (op-tmp)<sizeof(tmp)-1 && (buflen<0 || (p-buf)<buflen))
-  {
-    if (*p == '&' && !(align&DT_NOPREFIX)) p++; 
-    else if (*p == '\r')  p++; 
-    else if (*p == '\n' && (align&DT_SINGLELINE)) { *op++ = ' '; p++; }
-    else *op++=*p++;
-  }
-  *op=0;
-  
-  static HFONT m_bkfont;
-  GDP_OBJECT *font=ct->curfont ? ct->curfont : (GDP_OBJECT*)m_bkfont;
-  if (!font)
-  {
-    font=(GDP_OBJECT*) (m_bkfont=CreateFont(10,0,0,0,FW_NORMAL,0,0,0,0,0,0,0,0,"Arial"));
-    if (!font) return 0;
-  }
+  HDC__ *ct=(HDC__ *)ctx;
+  HGDIOBJ__ *font=ct->curfont; // caller must specify a valid font
   
   UniChar strbuf[4096];
-  strbuf[0]=0;
-  int l=0;
-  CFStringRef str=CFStringCreateWithCString(NULL,tmp,kCFStringEncodingUTF8);
-  if (!str) str=CFStringCreateWithCString(NULL,tmp,kCFStringEncodingASCII);
-  
-  if (str)
+  int strbuf_len;
+ 
   {
-    CFRange r = {0,CFStringGetLength(str)};
+    strbuf[0]=0;
+    CFRange r = {0,CFStringGetLength(strin)};
     if (r.length > 4095) r.length=4095;
-    l=CFStringGetBytes(str,r,kCFStringEncodingUTF16,' ',false,(UInt8*)strbuf,sizeof(strbuf)-2,NULL);
-    if (l<0)l=0;
-    else if (l>4095) l=4095;
-    strbuf[l]=0;
-    CFRelease(str);
+    strbuf_len=CFStringGetBytes(strin,r,kCFStringEncodingUTF16,' ',false,(UInt8*)strbuf,sizeof(strbuf)-2,NULL);
+    if (strbuf_len<0)strbuf_len=0;
+    else if (strbuf_len>4095) strbuf_len=4095;
+    strbuf[strbuf_len]=0;
   }
   
   {
-    RGBColor tcolor={GetRValue(ct->cur_text_color_int)*256,GetGValue(ct->cur_text_color_int)*256,GetBValue(ct->cur_text_color_int)*256};
     ATSUAttributeTag        theTags[] = { kATSUColorTag,   };
     ByteCount               theSizes[] = { sizeof(RGBColor),  };
+
+    RGBColor tcolor;
     ATSUAttributeValuePtr   theValues[] =  {&tcolor,  } ;
     
+    tcolor.red = GetRValue(ct->cur_text_color_int)*256;
+    tcolor.green = GetGValue(ct->cur_text_color_int)*256;
+    tcolor.blue = GetBValue(ct->cur_text_color_int)*256;
     
-    ATSUSetAttributes(font->font_style,  sizeof(theTags)/sizeof(theTags[0]), theTags, theSizes, theValues);
+    // error check this? we can live with the wrong color maybe?
+    ATSUSetAttributes(font->atsui_font_style,  sizeof(theTags)/sizeof(theTags[0]), theTags, theSizes, theValues);
   }
   
   UniCharCount runLengths[1]={kATSUToTextEnd};
   ATSUTextLayout layout; 
-  ATSUCreateTextLayoutWithTextPtr(strbuf, kATSUFromTextBeginning, kATSUToTextEnd, l, 1, runLengths, &font->font_style, &layout);
+  if (ATSUCreateTextLayoutWithTextPtr(strbuf, kATSUFromTextBeginning, kATSUToTextEnd, strbuf_len, 1, runLengths, &font->atsui_font_style, &layout)!=noErr)
+  {
+    *err=true;
+    return 0;
+  }
   
- 
   {
     Fixed frot = X2Fix(font->font_rotation);
-     
+    
     ATSULineTruncation tv = (align & DT_END_ELLIPSIS) ? kATSUTruncateEnd : kATSUTruncateNone;
     ATSUAttributeTag        theTags[] = { kATSUCGContextTag, kATSULineTruncationTag, kATSULineRotationTag };
     ByteCount               theSizes[] = { sizeof (CGContextRef), sizeof(ATSULineTruncation), sizeof(Fixed)};
     ATSUAttributeValuePtr   theValues[] =  { &ct->ctx, &tv, &frot } ;
     
     
-    ATSUSetLayoutControls (layout,
+    if (ATSUSetLayoutControls (layout,
                            
                            sizeof(theTags)/sizeof(theTags[0]),
                            
@@ -941,14 +841,24 @@ int DrawText(HDC ctx, const char *buf, int buflen, RECT *r, int align)
                            
                            theSizes,
                            
-                           theValues);
+                           theValues)!=noErr)
+    {
+      *err=true;
+      ATSUDisposeTextLayout(layout);   
+      return 0;
+    }
   }
-
+  
   
   ATSUTextMeasurement leftFixed, rightFixed, ascentFixed, descentFixed;
-  
-  ATSUGetUnjustifiedBounds(layout, kATSUFromTextBeginning, kATSUToTextEnd, &leftFixed, &rightFixed, &ascentFixed, &descentFixed);
-  
+
+  if (ATSUGetUnjustifiedBounds(layout, kATSUFromTextBeginning, kATSUToTextEnd, &leftFixed, &rightFixed, &ascentFixed, &descentFixed)!=noErr) 
+  {
+    *err=true;
+    ATSUDisposeTextLayout(layout);   
+    return 0;
+  }
+
   int w=Fix2Long(rightFixed);
   int descent=Fix2Long(descentFixed);
   int h=descent + Fix2Long(ascentFixed);
@@ -959,243 +869,382 @@ int DrawText(HDC ctx, const char *buf, int buflen, RECT *r, int align)
     r->bottom=r->top+h;
     return h;  
   }
-    
-  //if (!(align & DT_NOCLIP))
-  {
-    CGContextSaveGState(ct->ctx);    
-  }
- 
+  CGContextSaveGState(ct->ctx);    
+
   if (!(align & DT_NOCLIP))
     CGContextClipToRect(ct->ctx,CGRectMake(r->left,r->top,r->right-r->left,r->bottom-r->top));
-  
-  {
-    
-    int l=r->left, t=r->top;
-    
-    if (fabs(font->font_rotation)<45.0)
-    {
-      if (align & DT_RIGHT)
-        l = r->right-w;
-      else if (align & DT_CENTER)
-        l = (r->right+r->left)/2 - w/2;      
-    }
-    else l+=Fix2Long(ascentFixed); // 90 degree special case (we should generalize this to be correct throughout the rotation range, but oh well)
-    
-    if (align & DT_BOTTOM)
-      t = r->bottom-h;
-    else if (align & DT_VCENTER)
-      t = (r->bottom+r->top)/2 - h/2;
-    
-    CGContextTranslateCTM(ct->ctx,0,t);
-    CGContextScaleCTM(ct->ctx,1,-1);
-    CGContextTranslateCTM(ct->ctx,0,-t-h);
-    
-    if (ct->curbkmode == OPAQUE)
-    {      
-      CGRect bgr = CGRectMake(l, t, w, h);
-      CGColorSpaceRef csr = CGColorSpaceCreateDeviceRGB();
-      float col[] = { (float)GetRValue(ct->curbkcol)/255.0f,  (float)GetGValue(ct->curbkcol)/255.0f, (float)GetBValue(ct->curbkcol)/255.0f, 1.0f };
-      CGColorRef bgc = CGColorCreate(csr, col);
-      CGContextSetFillColorWithColor(ct->ctx, bgc);
-      CGContextFillRect(ct->ctx, bgr);
-      CGColorRelease(bgc);	
-      CGColorSpaceRelease(csr);
-    }
-        
-    ATSUDrawText(layout,kATSUFromTextBeginning,kATSUToTextEnd,Long2Fix(l),Long2Fix(t+descent));
-  }
 
-//  if (!(align & DT_NOCLIP))
+  int l=r->left, t=r->top;
+    
+  if (fabs(font->font_rotation)<45.0)
   {
-    CGContextRestoreGState(ct->ctx);    
+    if (align & DT_RIGHT) l = r->right-w;
+    else if (align & DT_CENTER) l = (r->right+r->left)/2 - w/2;      
   }
+  else l+=Fix2Long(ascentFixed); // 90 degree special case (we should generalize this to be correct throughout the rotation range, but oh well)
+    
+  if (align & DT_BOTTOM) t = r->bottom-h;
+  else if (align & DT_VCENTER) t = (r->bottom+r->top)/2 - h/2;
+    
+  CGContextTranslateCTM(ct->ctx,0,t);
+  CGContextScaleCTM(ct->ctx,1,-1);
+  CGContextTranslateCTM(ct->ctx,0,-t-h);
+    
+  if (ct->curbkmode == OPAQUE)
+  {      
+    CGRect bgr = CGRectMake(l, t, w, h);
+    CGColorRef bgc = CreateColor(ct->curbkcol);
+    CGContextSetFillColorWithColor(ct->ctx, bgc);
+    CGContextFillRect(ct->ctx, bgr);
+    CGColorRelease(bgc);	
+  }
+ 
+  if (ATSUDrawText(layout,kATSUFromTextBeginning,kATSUToTextEnd,Long2Fix(l),Long2Fix(t+descent))!=noErr)
+    *err=true;
+  
+  CGContextRestoreGState(ct->ctx);    
   
   ATSUDisposeTextLayout(layout);   
   
   return h;
 }
 
-#endif//SWELL_ATSUI_DRAWING
-  
+#endif
 
-
-#if SWELL_CGDRAWING
 int DrawText(HDC ctx, const char *buf, int buflen, RECT *r, int align)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return 0;
-   
-  //NSString *label=(NSString *)SWELL_CStringToCFString(buf); 
-  //NSRect r2 = NSMakeRect(r->left,r->top,r->right-r->left,r->bottom-r->top);
-  //[label drawWithRect:r2 options:NSStringDrawingUsesLineFragmentOrigin attributes:nil];
-  //[label release];
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return 0;
   
-  float xpos=(float)r->left;
-  float ypos=(float)r->top;
-  
-  if (align & DT_CALCRECT)
+  bool has_ml=false;
+  char tmp[4096];
+  const char *p=buf;
+  char *op=tmp;
+  while (*p && (op-tmp)<sizeof(tmp)-1 && (buflen<0 || (p-buf)<buflen))
   {
-#if 0
-    CGContextSaveGState(ct->ctx);
-	CGContextSetTextDrawingMode(ct->ctx,kCGTextClip);
-    CGContextShowTextAtPoint(ct->ctx,(float)r->left,(float)r->top,buf,strlen(buf));
-	CGRect orect=CGContextGetClipBoundingBox(ct->ctx);
-	r->right = r->left + (int) ceil(orect.size.width);
-	r->bottom= r->top + (int) ceil(orect.size.height);
-    CGContextRestoreGState(ct->ctx);
-	// measure
-#endif
-	return 0;
-  }
-	
-#if 0
-//  if (align & (DT_VCENTER|DT_BOTTOM|DT_CENTER|DT_RIGHT))
-  {
-    CGContextSaveGState(ct->ctx);
- 	CGContextSetTextDrawingMode(ct->ctx,kCGTextClip);
-	CGContextClipToRect(ct->ctx,CGRectMake(0,0,0,0)); // tested with this in case the kCGTextClip adds rather than intersects
-    CGContextShowTextAtPoint(ct->ctx,xpos,ypos,buf,strlen(buf));
-	CGRect orect=CGContextGetClipBoundingBox(ct->ctx);
- 	printf("text '%s'@%f, %f, measured to %f,%f,%f,%f\n",buf,xpos,ypos,orect.origin.x,orect.origin.y,orect.size.width,orect.size.height);
-	CGContextRestoreGState(ct->ctx);
+    if (*p == '&' && !(align&DT_NOPREFIX)) p++; 
 
-/*	if (align&DT_VCENTER)
-	{
-		ypos = r->top + (r->bottom-r->top - (orect.size.height))*0.5;
-	}
-	else if (align&DT_BOTTOM)
-	{
-	}
-	else */ // top
-	{
-		float yoffs = orect.origin.y-r->top;
-	//	ypos = r->top - yoffs;
-	}
-	/*
-	if (align&DT_CENTER)
-	{
-		xpos = r->left + (r->right-r->left - (orect.size.width))*0.5;
-	}
-	else if (align&DT_RIGHT)
-	{
-	}
-	else */ // left
- 	{
-//		xpos = r->left + (r->left - orect.origin.x);
-	}
-	
+    if (*p == '\r')  p++; 
+    else if (*p == '\n' && (align&DT_SINGLELINE)) { *op++ = ' '; p++; }
+    else 
+    {
+      if (*p == '\n') has_ml=true;
+      *op++=*p++;
+    }
   }
-#endif
+  *op=0;
+  
+  if (!tmp[0]) return 0; // dont draw empty strings
+  
+  NSString *str=CStringToNSString(tmp);
+  
+  if (!str) return 0;
+  
+  bool curfont_valid = HGDIOBJ_VALID(ct->curfont,TYPE_FONT);
+#ifdef SWELL_ATSUI_TEXT_SUPPORT
+  if (curfont_valid && ct->curfont->atsui_font_style)
+  {
+    bool err=false;
+    int ret =  DrawTextATSUI(ctx,(CFStringRef)str,r,align,&err);
+    [str release];
     
-  CGRect cr=CGRectMake((float)r->left,(float)r->top,(float)(r->right-r->left),(float)(r->bottom-r->top));
-  CGContextSaveGState(ct->ctx);
-//  CGContextClipToRect(ct->ctx,cr);
+    if (!err) return ret;
+    return 0;
+  }
+#endif  
+  
+#ifndef SWELL_NO_CORETEXT
+  CTFontRef fr = curfont_valid ? (CTFontRef)ct->curfont->ct_FontRef : NULL;
+  if (!fr)  fr=GetCoreTextDefaultFont();
+  if (fr)
+  {
+    // Initialize string, font, and context
+    CFStringRef keys[] = { kCTFontAttributeName,kCTForegroundColorAttributeName };
+    CFTypeRef values[] = { fr,ct->curtextcol };
+    
+    int nk= sizeof(keys) / sizeof(keys[0]);
+    if (!values[1]) nk--;
+    
+    CFDictionaryRef attributes = CFDictionaryCreate(kCFAllocatorDefault, (const void**)&keys, (const void**)&values, nk,
+                                &kCFTypeDictionaryKeyCallBacks,
+                                &kCFTypeDictionaryValueCallBacks);
+       
+    CFAttributedStringRef attrString =
+          CFAttributedStringCreate(kCFAllocatorDefault, (CFStringRef)str, attributes);
+    CFRelease(attributes);
+    [str release];
 
-  if (ct->curcgtextcol) CGContextSetFillColorWithColor(ct->ctx,ct->curcgtextcol);
-  CGContextSetTextDrawingMode(ct->ctx,kCGTextFill);
-  CGContextShowTextAtPoint(ct->ctx,xpos,ypos,buf,strlen(buf));
-  CGContextRestoreGState(ct->ctx);
 
-  return 30;
+    CTFrameRef frame = NULL;
+    CFArrayRef lines = NULL;
+    CTLineRef line = NULL;
+    CGFloat asc=0;
+    int line_w=0,line_h=0;
+    if (has_ml)
+    {
+      CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(attrString);
+      if (framesetter)
+      {
+        CGMutablePathRef path=CGPathCreateMutable();
+        CGPathAddRect(path,NULL,CGRectMake(0,0,100000,100000));
+        frame = CTFramesetterCreateFrame(framesetter,CFRangeMake(0,0),path,NULL);
+        CFRelease(framesetter);
+        CFRelease(path);
+      }
+      if (frame)
+      {
+        lines = CTFrameGetLines(frame);
+        int n=CFArrayGetCount(lines);
+        int x;
+        for(x=0;x<n;x++)
+        {
+          CTLineRef l = (CTLineRef)CFArrayGetValueAtIndex(lines,x);
+          if (l)
+          {
+            CGFloat asc=0,desc=0,lead=0;
+            int w = (int) floor(CTLineGetTypographicBounds(l,&asc,&desc,&lead)+0.5);
+            int h =(int) floor(asc+desc+lead+1.5);
+            line_h+=h;
+            if (line_w < w) line_w=w;
+          }
+        }
+      }
+    }
+    else
+    {
+      line = CTLineCreateWithAttributedString(attrString);
+       
+      if (line)
+      {
+        CGFloat desc=0,lead=0;
+        line_w = (int) floor(CTLineGetTypographicBounds(line,&asc,&desc,&lead)+0.5);
+        line_h =(int) floor(asc+desc+lead+1.5);
+      }
+    }
+    if (line_h) line_h++;
+
+    CFRelease(attrString);
+    
+    if (align & DT_CALCRECT)
+    {
+      r->right = r->left+line_w;
+      r->bottom = r->top+line_h;
+      if (line) CFRelease(line);
+      if (frame) CFRelease(frame);
+      return line_h;
+    }
+
+    float xo=r->left,yo=r->top;
+    if (align & DT_RIGHT) xo += (r->right-r->left) - line_w;
+    else if (align & DT_CENTER) xo += (r->right-r->left)/2 - line_w/2;
+
+    if (align & DT_BOTTOM) yo += (r->bottom-r->top) - line_h;
+    else if (align & DT_VCENTER) yo += (r->bottom-r->top)/2 - line_h/2;
+
+    
+    CGContextSaveGState(ct->ctx);
+
+    CGAffineTransform f={1,0,0,-1,0,0};
+    CGContextSetTextMatrix(ct->ctx, f);
+
+    if (!(align & DT_NOCLIP))
+    {
+      CGContextClipToRect(ct->ctx,CGRectMake(r->left,r->top,r->right-r->left,r->bottom-r->top));          
+    }
+    
+    CGColorRef bgc = NULL;
+    if (ct->curbkmode == OPAQUE)
+    {      
+      bgc = CreateColor(ct->curbkcol);
+    }
+
+    if (line) 
+    {
+      if (bgc)
+      {
+        CGContextSetFillColorWithColor(ct->ctx, bgc);
+        CGContextFillRect(ct->ctx, CGRectMake(xo,yo,line_w,line_h));
+      }
+      CGContextSetTextPosition(ct->ctx, xo, yo + asc);
+      CTLineDraw(line,ct->ctx);
+
+    }
+    if (lines)
+    {
+      int n=CFArrayGetCount(lines);
+      int x;
+      for(x=0;x<n;x++)
+      {
+        CTLineRef l = (CTLineRef)CFArrayGetValueAtIndex(lines,x);
+        if (l)
+        {
+          CGFloat asc=0,desc=0,lead=0;
+          float lw=CTLineGetTypographicBounds(l,&asc,&desc,&lead);
+
+          if (bgc)
+          {
+            CGContextSetFillColorWithColor(ct->ctx, bgc);
+            CGContextFillRect(ct->ctx, CGRectMake(xo,yo,lw,asc+desc+lead));
+          }
+          CGContextSetTextPosition(ct->ctx, xo, yo + asc);
+          CTLineDraw(l,ct->ctx);
+          
+          yo += floor(asc+desc+lead+0.5);          
+        }
+      }
+      
+    }
+    
+    CGContextRestoreGState(ct->ctx);
+    if (bgc) CGColorRelease(bgc);
+    if (line) CFRelease(line);
+    if (frame) CFRelease(frame);
+    
+    return line_h;
+  }
+#endif
+  
+  
+  [str release];
+  return 0;  
 }
-#endif // CG drawing
+    
+  
+
+
+
 
 void SetBkColor(HDC ctx, int col)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return;
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return;
   ct->curbkcol=col;
 }
 
 void SetBkMode(HDC ctx, int col)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return;
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return;
   ct->curbkmode=col;
+}
+
+int GetTextColor(HDC ctx)
+{
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return -1;
+  return ct->cur_text_color_int;
 }
 
 void SetTextColor(HDC ctx, int col)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (!ct) return;
+  HDC__ *ct=(HDC__ *)ctx;
+  if (!HDC_VALID(ct)) return;
   ct->cur_text_color_int = col;
   
-#if SWELL_NSSTRING_DRAWING
-  [ct->curtextcol release];    
-  ct->curtextcol=[NSColor colorWithCalibratedRed:GetRValue(col)/255.0f green:GetGValue(col)/255.0f blue:GetBValue(col)/255.0f alpha:1.0f];
-  [ct->curtextcol retain];
-#else
+  if (ct->curtextcol) CFRelease(ct->curtextcol);
 
-  if (ct->curcgtextcol) CGColorRelease(ct->curcgtextcol);
-  ct->curcgtextcol = CreateColor(col,1.0);
-  
-#endif
+  ct->curtextcol = CreateColor(col);
+}
+
+
+HICON CreateIconIndirect(ICONINFO* iconinfo)
+{
+  if (!iconinfo || !iconinfo->fIcon) return 0;  
+  HGDIOBJ__* i=iconinfo->hbmColor;
+  if (!HGDIOBJ_VALID(i,TYPE_BITMAP) || !i->bitmapptr) return 0;
+  NSImage* img=i->bitmapptr;
+  if (!img) return 0;
+    
+  HGDIOBJ__* icon=GDP_OBJECT_NEW();
+  icon->type=TYPE_BITMAP;
+  icon->wid=1;
+  [img retain];
+  icon->bitmapptr=img;
+  return icon;   
 }
 
 HICON LoadNamedImage(const char *name, bool alphaFromMask)
 {
-  int needfree=0;
   NSImage *img=0;
-  NSString *str=(NSString *)SWELL_CStringToCFString(name); 
+  NSString *str=CStringToNSString(name); 
   if (strstr(name,"/"))
   {
     img=[[NSImage alloc] initWithContentsOfFile:str];
-    if (img) needfree=1;
   }
-  if (!img) img=[NSImage imageNamed:str];
+  if (!img) 
+  {
+    img=[NSImage imageNamed:str];
+    if (img) [img retain];
+  }
   [str release];
   if (!img) 
   {
     return 0;
   }
-  
-  
+    
+  [img setFlipped:YES];
   if (alphaFromMask)
   {
-    NSSize sz=[img size];
-    NSImage *newImage=[[NSImage alloc] initWithSize:sz];
-    [newImage lockFocus];
-    
-    [img setFlipped:YES];
-    [img drawInRect:NSMakeRect(0,0,sz.width,sz.height) fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-    int y;
-    CGContextRef myContext = (CGContextRef) [[NSGraphicsContext currentContext] graphicsPort];
-    for (y=0; y< sz.height; y ++)
+    const NSSize sz=[img size];
+    const int w = (int)sz.width, h=(int)sz.height;
+    HDC hdc;
+    if (w>0 && h>0 && NULL != (hdc=SWELL_CreateMemContext(NULL,w,h)))
     {
-      int x;
-      for (x = 0; x < sz.width; x ++)
+      [NSGraphicsContext saveGraphicsState];
+      NSGraphicsContext *gc=[NSGraphicsContext graphicsContextWithGraphicsPort:((struct HDC__*)hdc)->ctx flipped:NO];
+      [NSGraphicsContext setCurrentContext:gc];
+      [img drawInRect:NSMakeRect(0,0,w,h) fromRect:NSZeroRect operation:NSCompositeCopy fraction:1.0];
+      [NSGraphicsContext restoreGraphicsState];
+
+      NSImage *newImage=[[NSImage alloc] initWithData:[img TIFFRepresentation]];
+      [newImage setFlipped:YES];
+
+      const int *fb = (const int *)SWELL_GetCtxFrameBuffer(hdc);
+      int y,rcnt=0;
+      [newImage lockFocus];
+      CGContextRef myContext = (CGContextRef) [[NSGraphicsContext currentContext] graphicsPort];
+      for (y=0; y < h; y ++)
       {
-        NSColor *col=NSReadPixel(NSMakePoint(x,y));
-        if (col && [col numberOfComponents]<=4)
+        int x;
+        for (x = 0; x < w; x++)
         {
-          CGFloat comp[4];
-          [col getComponents:comp]; // this relies on the format being RGB
-          if (comp[0] == 1.0 && comp[1] == 0.0 && comp[2] == 1.0 && comp[3]==1.0)
-            //fabs(comp[0]-1.0) < 0.0001 && fabs(comp[1]-.0) < 0.0001 && fabs(comp[2]-1.0) < 0.0001)
+#ifdef __ppc__
+          if ((*fb++ & 0xffffff) == 0xff00ff)
+#else
+          if ((*fb++ & 0xffffff00) == 0xff00ff00)
+#endif
           {
             CGContextClearRect(myContext,CGRectMake(x,y,1,1));
+            rcnt++;
           }
         }
       }
+      [newImage unlockFocus];
+
+      SWELL_DeleteGfxContext(hdc);
+
+      if (rcnt)
+      {
+        [img release];
+        img=newImage;    
+      }
+      else
+        [newImage release];
     }
-    [newImage unlockFocus];
-    
-    if (needfree) [img release];
-    needfree=1;
-    img=newImage;    
   }
-  GDP_OBJECT *i=GDP_OBJECT_NEW();
+  
+  HGDIOBJ__ *i=GDP_OBJECT_NEW();
   i->type=TYPE_BITMAP;
-  i->wid=needfree;
+  i->wid=1;
   i->bitmapptr = img;
   return i;
 }
 
-void DrawImageInRect(HDC ctx, HICON img, RECT *r)
+void DrawImageInRect(HDC ctx, HICON img, const RECT *r)
 {
-  GDP_OBJECT *i = (GDP_OBJECT *)img;
-  if (!ctx || !i || i->type != TYPE_BITMAP||!i->bitmapptr) return;
-  GDP_CTX *ct=(GDP_CTX*)ctx;
+  HGDIOBJ__ *i = (HGDIOBJ__ *)img;
+  HDC__ *ct=(HDC__*)ctx;
+  if (!HDC_VALID(ct) || !HGDIOBJ_VALID(i,TYPE_BITMAP) || !i->bitmapptr) return;
   //CGContextDrawImage(ct->ctx,CGRectMake(r->left,r->top,r->right-r->left,r->bottom-r->top),(CGImage*)i->bitmapptr);
   // probably a better way since this ignores the ctx
   [NSGraphicsContext saveGraphicsState];
@@ -1205,7 +1254,7 @@ void DrawImageInRect(HDC ctx, HICON img, RECT *r)
   NSRect rr=NSMakeRect(r->left,r->top,r->right-r->left,r->bottom-r->top);
   [nsi setFlipped:YES];
   [nsi drawInRect:rr fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-  [nsi setFlipped:NO];
+  [nsi setFlipped:NO]; // todo: restore old flippedness?
   [NSGraphicsContext restoreGraphicsState];
 //  [gc release];
 }
@@ -1216,8 +1265,8 @@ BOOL GetObject(HICON icon, int bmsz, void *_bm)
   memset(_bm,0,bmsz);
   if (bmsz != sizeof(BITMAP)) return false;
   BITMAP *bm=(BITMAP *)_bm;
-  GDP_OBJECT *i = (GDP_OBJECT *)icon;
-  if (!i || i->type != TYPE_BITMAP) return false;
+  HGDIOBJ__ *i = (HGDIOBJ__ *)icon;
+  if (!HGDIOBJ_VALID(i,TYPE_BITMAP)) return false;
   NSImage *img = i->bitmapptr;
   if (!img) return false;
   bm->bmWidth = (int) ([img size].width+0.5);
@@ -1228,8 +1277,8 @@ BOOL GetObject(HICON icon, int bmsz, void *_bm)
 
 void *GetNSImageFromHICON(HICON ico)
 {
-  GDP_OBJECT *i = (GDP_OBJECT *)ico;
-  if (!i || i->type != TYPE_BITMAP) return 0;
+  HGDIOBJ__ *i = (HGDIOBJ__ *)ico;
+  if (!HGDIOBJ_VALID(i,TYPE_BITMAP)) return 0;
   return i->bitmapptr;
 }
 
@@ -1272,206 +1321,299 @@ int GetSysColor(int idx)
   return 0;
 }
 
-void BitBltAlphaFromMem(HDC hdcOut, int x, int y, int w, int h, void *inbufptr, int inbuf_span, int inbuf_h, int xin, int yin, int mode, bool useAlphaChannel, float opacity)
-{
-  if (opacity<0.0001) return;
-  
-  if (!hdcOut ||w<1||h<1) return;
-  GDP_CTX *dest=(GDP_CTX*)hdcOut;
-  if (!inbufptr || !inbuf_span || !inbuf_h || !dest->ctx) return;
-  
-  if (inbuf_span < 0)
-  {
-    inbufptr = ((char *)inbufptr) - 4*inbuf_span*(inbuf_h-1);
-  }
-  int srcWidth = inbuf_span < 0 ? -inbuf_span : inbuf_span;
-  int srcHeight = inbuf_h;
-  if (xin<0){ x-=xin; w+=xin; xin=0; }
-  if (yin<0){ y-=yin; h+=yin; yin=0; }
-  if (xin+w>srcWidth) w=srcWidth-xin;
-  if (yin+h>srcHeight) h=srcHeight-yin;
-  if (w<1||h<1) return;
-
-  void *buf=calloc(w*4,h);
-  if (!buf) return;
-  CGColorSpaceRef cs=CGColorSpaceCreateDeviceRGB();
-  CGContextRef newtmpctx=CGBitmapContextCreate(buf,w,h,8,w*4,cs, kCGImageAlphaPremultipliedFirst);
-  CGColorSpaceRelease(cs);
-  if (!newtmpctx)
-  {
-    free(buf);
-    return;
-  }
-
-  unsigned char *outbuf = (unsigned char *)buf;
-  unsigned char *inbuf = ((unsigned char *)inbufptr) + xin*4 + yin*4*inbuf_span;
-  int a;
-  int maxop=255;
-  if (useAlphaChannel) maxop=256;
-  int opac=(int)(opacity*maxop + 0.5);
-  if (opac<0)opac=0;
-  else if (opac>maxop) opac=maxop;
-  
-  for (a=0;a<h;a++)
-  {
-    int b;
-    if (useAlphaChannel && opac!=256)
-    {
-      for (b=0;b<w;b++)
-      {
-        int v=*outbuf++ = (*inbuf++ * (int)opac)>>8;
-        *outbuf++ = (*inbuf++*v)>>8;
-        *outbuf++ = (*inbuf++*v)>>8;
-        *outbuf++ = (*inbuf++*v)>>8;
-      }
-    }
-    else if (useAlphaChannel)
-    {
-      for (b=0;b<w;b++)
-      {
-        int v=*outbuf++ = *inbuf++;
-        *outbuf++ = (*inbuf++*v)>>8;
-        *outbuf++ = (*inbuf++*v)>>8;
-        *outbuf++ = (*inbuf++*v)>>8;
-      }
-    }
-    else if (opac<255)
-    {
-      for (b=0;b<w;b++)
-      {
-        *outbuf++ = opac; inbuf++;
-        *outbuf++ = (*inbuf++*opac)>>8;
-        *outbuf++ = (*inbuf++*opac)>>8;
-        *outbuf++ = (*inbuf++*opac)>>8;
-      }
-    }
-    else
-    {
-      for (b=0;b<w;b++)
-      {
-        *outbuf++ = 255; inbuf++;
-        *outbuf++ = *inbuf++;
-        *outbuf++ = *inbuf++;
-        *outbuf++ = *inbuf++;
-      }
-    }
-    inbuf += inbuf_span*4 - w*4;
-  }
-
-  CGImage *img=CGBitmapContextCreateImage(newtmpctx);
-  if (img)
-  {
-    CGContextSaveGState(dest->ctx);
-    CGContextScaleCTM(dest->ctx,1.0,-1.0);  
-    CGContextDrawImage(dest->ctx,CGRectMake(x,-h-y,w,h),img);    
-    CGContextRestoreGState(dest->ctx);
-    CGImageRelease(img);
-  }
-  CGContextRelease(newtmpctx);
-  free(buf);
-
-}
-
-void BitBltAlpha(HDC hdcOut, int x, int y, int w, int h, HDC hdcIn, int xin, int yin, int mode, bool useAlphaChannel, float opacity)
-{
-  if (!useAlphaChannel&&opacity>=0.9999)
-  {
-    BitBlt(hdcOut,x,y,w,h,hdcIn,xin,yin,mode);
-    return;
-  }
-
-  if (!hdcOut || !hdcIn||w<1||h<1) return;
-  GDP_CTX *src=(GDP_CTX*)hdcIn;
-  GDP_CTX *dest=(GDP_CTX*)hdcOut;
-  if (!src->ownedData || !src->ctx || !dest->ctx) return;
-  
-  BitBltAlphaFromMem(hdcOut,x,y,w,h,src->ownedData,CGBitmapContextGetWidth(src->ctx), CGBitmapContextGetHeight(src->ctx),xin,yin,mode,useAlphaChannel,opacity);
-  
-}
 
 void BitBlt(HDC hdcOut, int x, int y, int w, int h, HDC hdcIn, int xin, int yin, int mode)
 {
-  if (!hdcOut || !hdcIn||w<1||h<1) return;
-  GDP_CTX *src=(GDP_CTX*)hdcIn;
-  GDP_CTX *dest=(GDP_CTX*)hdcOut;
-  if (!src->ownedData || !src->ctx || !dest->ctx) return;
-  
-  
-  CGImageRef img=CGBitmapContextCreateImage(src->ctx);
-
-  if (!img) return;
-  
-  CGContextRef output = (CGContextRef)dest->ctx; 
-  
-  if (xin || yin || w != CGImageGetWidth(img) || h != CGImageGetHeight(img))
-  {
-    CGImageRef img2 = CGImageCreateWithImageInRect(img,CGRectMake(xin,yin,w,h));
-    CGImageRelease(img);
-    if (!img2) return;
-    img=img2;
-    w=CGImageGetWidth(img);
-    h=CGImageGetHeight(img);
-  }
-  
-  CGContextSaveGState(output);
-  CGContextScaleCTM(output,1.0,-1.0);  
-  CGContextDrawImage(output,CGRectMake(x,-h-y,w,h),img);    
-  CGContextRestoreGState(output);
-  
-  CGImageRelease(img);   
+  StretchBlt(hdcOut,x,y,w,h,hdcIn,xin,yin,w,h,mode);
 }
 
-void StretchBlt(HDC hdcOut, int x, int y, int w, int h, HDC hdcIn, int xin, int yin, int srcw, int srch, int mode)
+#ifndef __ppc__
+static void SWELL_fastDoubleUpImage(unsigned int *op, const unsigned int *ip, int w, int h, int sw, int newspan)
 {
-  if (!hdcOut || !hdcIn||srcw<1||srch<1||w<1||h<1) return;
-  GDP_CTX *src=(GDP_CTX*)hdcIn;
-  GDP_CTX *dest=(GDP_CTX*)hdcOut;
-  if (!src->ownedData || !src->ctx || !dest->ctx) return;
-
-  CGImageRef img = CGBitmapContextCreateImage(src->ctx);
-  if (!img) return;
-  
-  if (xin || yin || srcw != CGImageGetWidth(img) || srch != CGImageGetHeight(img))
+  int y = h;
+  while (y-->0)
   {
-    CGImageRef img2 = CGImageCreateWithImageInRect(img,CGRectMake(xin,yin,srcw,srch));
-    CGImageRelease(img);
-    if (!img2) return;
-    img=img2;
-    w=CGImageGetWidth(img);
-    h=CGImageGetHeight(img);
-  }
+    const unsigned int *rd = ip;
+    unsigned int *wr = op;
+    int remaining = w;
+
+#if 0 // def __AVX__
+    // this isn't really any faster than SSE anyway
+    if (remaining >= 8)
+    {
+      if (!((INT_PTR)rd & 31))
+      {
+        int x = remaining/8;
+        while (x-->0)
+        {
+          const __m256 m =  _mm256_load_ps((const float *)rd);
+          rd+=8;
+          
+          const __m256 p1 = _mm256_permutevar_ps(_mm256_permute2f128_ps(m,m,0),_mm256_set_epi32(3,3,2,2,1,1,0,0));
+          const __m256 p2 = _mm256_permutevar_ps(_mm256_permute2f128_ps(m,m,1|(1<<4)),_mm256_set_epi32(3,3,2,2,1,1,0,0));
+          
+          unsigned int *wr2 = wr+newspan;
+          _mm256_store_ps((float*)wr,p1);
+          _mm256_store_ps((float*)wr2,p1);
+        
+          _mm256_store_ps((float*)wr + 8,p2);
+          _mm256_store_ps((float*)wr2 + 8,p2);
+          
+          wr += 16;
+        }
+        remaining &= 7;
+        
+      }
+    }
+#endif
     
-  CGContextSaveGState(dest->ctx);
-  CGContextScaleCTM(dest->ctx,1.0,-1.0);  
-  CGContextDrawImage(dest->ctx,CGRectMake(x,-h-y,w,h),img);    
-  CGContextRestoreGState(dest->ctx);
+#ifdef __SSE__
+    if (remaining >= 4)
+    {
+      // with SSE is about 2x faster than without
+      if (((INT_PTR)rd & 7))
+      {
+        // input isn't 8 byte aligned, must use unaligned reads
+        int x = remaining/4;
+        while (x-->0)
+        {
+          __m128 m =  _mm_loadu_ps((const float *)rd);
+          __m128 p1 = _mm_shuffle_ps(m,m,_MM_SHUFFLE(1,1,0,0));
+          __m128 p2 = _mm_shuffle_ps(m,m,_MM_SHUFFLE(3,3,2,2));
+          
+          unsigned int *wr2 = wr+newspan;
+          rd+=4;
+          
+          _mm_store_ps((float*)wr,p1);
+          _mm_store_ps((float*)wr2,p1);
+          
+          _mm_store_ps((float*)wr + 4,p2);
+          _mm_store_ps((float*)wr2 + 4,p2);
+          
+          wr += 8;
+        }
+      }
+      else
+      {
+        // if rd is 8 byte aligned, we can do SSE without unaligned reads
+        
+        // but if it is not 16 byte aligned, we need to preprocess a pair of pixels
+        // (advancing rd by 8 bytes, and wr by 16)
+      
+        if ((INT_PTR)rd & 15)
+        {
+          unsigned int *nwr = wr+newspan;
+          wr[0] = wr[1] = nwr[0] = nwr[1] = rd[0];
+          wr[2] = wr[3] = nwr[2] = nwr[3] = rd[1];
+          wr+=4;
+          rd+=2;
+          remaining-=2;
+        }
+        
+        int x = remaining/4;
+        while (x-->0)
+        {
+          __m128 m =  _mm_load_ps((const float *)rd);
+          __m128 p1 = _mm_shuffle_ps(m,m,_MM_SHUFFLE(1,1,0,0));
+          __m128 p2 = _mm_shuffle_ps(m,m,_MM_SHUFFLE(3,3,2,2));
+
+          unsigned int *wr2 = wr+newspan;
+          rd+=4;
+          
+          _mm_store_ps((float*)wr,p1);
+          _mm_store_ps((float*)wr2,p1);
+          
+          _mm_store_ps((float*)wr + 4,p2);
+          _mm_store_ps((float*)wr2 + 4,p2);
+
+          wr += 8;
+        }
+      }
+      remaining &= 3;
+    }
+#endif //__SSE__
+
+    int x = remaining/2;
+    while (x-->0)
+    {
+      unsigned int *nwr = wr+newspan;
+      wr[0] = wr[1] = nwr[0] = nwr[1] = rd[0];
+      wr[2] = wr[3] = nwr[2] = nwr[3] = rd[1];
+      rd+=2;
+      wr+=4;
+    }
+    if (remaining&1)
+    {
+      wr[0] = wr[1] = wr[newspan] = wr[newspan+1] = *rd;
+    }
+    ip += sw;
+    op += newspan*2;
+  }
+}
+#endif
+
+void StretchBlt(HDC hdcOut, int x, int y, int destw, int desth, HDC hdcIn, int xin, int yin, int w, int h, int mode)
+{
+  if (!hdcOut || !hdcIn||w<1||h<1) return;
+  HDC__ *src=(HDC__*)hdcIn;
+  HDC__ *dest=(HDC__*)hdcOut;
+  if (!HDC_VALID(src) || !HDC_VALID(dest) || !src->ownedData || !src->ctx || !dest->ctx) return;
+
+  if (w<1||h<1) return;
   
-  CGImageRelease(img);
+  int sw=  CGBitmapContextGetWidth(src->ctx);
+  int sh= CGBitmapContextGetHeight(src->ctx);
+  
+  int preclip_w=w;
+  int preclip_h=h;
+  
+  if (xin<0) 
+  { 
+    x-=(xin*destw)/w;
+    w+=xin; 
+    xin=0; 
+  }
+  if (yin<0) 
+  { 
+    y-=(yin*desth)/h;
+    h+=yin; 
+    yin=0; 
+  }
+  if (xin+w > sw) w=sw-xin;
+  if (yin+h > sh) h=sh-yin;
+  
+  if (w<1||h<1) return;
+
+  if (destw==preclip_w) destw=w; // no scaling, keep width the same
+  else if (w != preclip_w) destw = (w*destw)/preclip_w;
+  
+  if (desth == preclip_h) desth=h;
+  else if (h != preclip_h) desth = (h*desth)/preclip_h;
+  
+  const bool use_alphachannel = mode == SRCCOPY_USEALPHACHAN;
+  
+  CGContextRef output = (CGContextRef)dest->ctx;
+  CGRect outputr = CGRectMake(x,-desth-y,destw,desth);
+  
+  unsigned char *p = (unsigned char *)ALIGN_FBUF(src->ownedData);
+  p += (xin + sw*yin)*4;
+
+  
+#ifdef SWELL_SUPPORT_OPENGL_BLIT
+  if (dest->GLgfxctx)
+  {
+    NSOpenGLContext *glCtx = (NSOpenGLContext*) dest->GLgfxctx;
+    NSOpenGLContext *cCtx = [NSOpenGLContext currentContext];
+    if (glCtx != cCtx)
+    {
+      [glCtx makeCurrentContext];
+    }
+    
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_TEXTURE_RECTANGLE_EXT);
+    
+    GLuint texid=0;
+    glGenTextures(1, &texid);
+    glBindTexture(GL_TEXTURE_RECTANGLE_EXT, texid);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, sw);
+    glTexParameteri(GL_TEXTURE_RECTANGLE_EXT, GL_TEXTURE_MIN_FILTER,  GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_RECTANGLE_EXT,0,GL_RGBA8,w,h,0,GL_BGRA,GL_UNSIGNED_INT_8_8_8_8, p);
+    
+    glClear(GL_COLOR_BUFFER_BIT);
+    glViewport(x,[[glCtx view] bounds].size.height-h-y,w,h);
+    glBegin(GL_QUADS);
+    
+    glTexCoord2f(0.0f, 0.0f);
+    glVertex2f(-1,1);
+    
+    glTexCoord2f(0.0f, h);
+    glVertex2f(-1,-1);
+    
+    glTexCoord2f(w,h);
+    glVertex2f(1,-1);
+    
+    glTexCoord2f(w, 0.0f);
+    glVertex2f(1,1);
+    glEnd();
+    
+    glDeleteTextures(1,&texid);
+    glFlush();
+
+    if (glCtx != cCtx) [cCtx makeCurrentContext];
+    return;
+  }
+#endif
+  
+  
+  // this is only faster when using the native color profile, it seems
+  WDL_HeapBuf *retina_hb = NULL;
+  unsigned char *retina_buf = NULL;
+#ifndef __ppc__
+  if (destw == w && desth == h && 
+      CGContextConvertSizeToDeviceSpace(output, CGSizeMake(1,1)).width > 1.9)
+  {
+    const int newspan = (w*2+3)&~3;
+    retina_hb = SWELL_GDP_GetTmpBuf();
+    if (retina_hb && retina_hb->ResizeOK(sizeof(unsigned int) * newspan*h*2 + 32,false))
+    {
+      retina_buf = (unsigned char *)retina_hb->Get();
+      const UINT_PTR align = (UINT_PTR)retina_buf & 31;
+      if (align) retina_buf += 32-align;
+
+      SWELL_fastDoubleUpImage((unsigned int *)retina_buf, 
+                        (const unsigned int *)p,w,h,sw,newspan);
+
+      sw = newspan;
+      w *= 2;
+      h *= 2;
+    }
+  }
+#endif
+
+  
+  CGDataProviderRef provider = CGDataProviderCreateWithData(NULL,retina_buf ? retina_buf : p,4*sw*h,NULL);
+  CGImageRef img = CGImageCreate(w,h,8,32,4*sw,__GetDisplayColorSpace(),
+      use_alphachannel?kCGImageAlphaFirst:kCGImageAlphaNoneSkipFirst,
+      provider,NULL,NO,kCGRenderingIntentDefault);
+  CGDataProviderRelease(provider);
+  
+  if (img)
+  {
+    CGContextSaveGState(output);
+    CGContextScaleCTM(output,1.0,-1.0);
+  
+    CGContextSetInterpolationQuality(output,kCGInterpolationNone);
+    CGContextDrawImage(output,outputr,img);
+    CGContextRestoreGState(output);
+  
+    CGImageRelease(img);
+  }
+  SWELL_GDP_DisposeTmpBuf(retina_hb);
 }
 
 void SWELL_PushClipRegion(HDC ctx)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (ct && ct->ctx) CGContextSaveGState(ct->ctx);
+  HDC__ *ct=(HDC__ *)ctx;
+  if (HDC_VALID(ct) && ct->ctx) CGContextSaveGState(ct->ctx);
 }
 
-void SWELL_SetClipRegion(HDC ctx, RECT *r)
+void SWELL_SetClipRegion(HDC ctx, const RECT *r)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (ct && ct->ctx) CGContextClipToRect(ct->ctx,CGRectMake(r->left,r->top,r->right-r->left,r->bottom-r->top));
+  HDC__ *ct=(HDC__ *)ctx;
+  if (HDC_VALID(ct) && ct->ctx) CGContextClipToRect(ct->ctx,CGRectMake(r->left,r->top,r->right-r->left,r->bottom-r->top));
 
 }
 
 void SWELL_PopClipRegion(HDC ctx)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (ct && ct->ctx) CGContextRestoreGState(ct->ctx);
+  HDC__ *ct=(HDC__ *)ctx;
+  if (HDC_VALID(ct) && ct->ctx) CGContextRestoreGState(ct->ctx);
 }
 
 void *SWELL_GetCtxFrameBuffer(HDC ctx)
 {
-  GDP_CTX *ct=(GDP_CTX *)ctx;
-  if (ct) return ct->ownedData;
+  HDC__ *ct=(HDC__ *)ctx;
+  if (HDC_VALID(ct)) return ALIGN_FBUF(ct->ownedData);
   return 0;
 }
 
@@ -1480,14 +1622,13 @@ HDC GetDC(HWND h)
 {
   if (h && [(id)h isKindOfClass:[NSWindow class]])
   {
-  // todo: eventually this can go away (once we move over to fully view based dialogs)
     if ([(id)h respondsToSelector:@selector(getSwellPaintInfo:)]) 
     {
       PAINTSTRUCT ps={0,}; 
       [(id)h getSwellPaintInfo:(PAINTSTRUCT *)&ps];
       if (ps.hdc) 
       {
-        if (((GDP_CTX*)ps.hdc)->ctx) CGContextSaveGState(((GDP_CTX*)ps.hdc)->ctx);
+        if ((ps.hdc)->ctx) CGContextSaveGState((ps.hdc)->ctx);
         return ps.hdc;
       }
     }
@@ -1500,9 +1641,9 @@ HDC GetDC(HWND h)
     {
       PAINTSTRUCT ps={0,}; 
       [(id)h getSwellPaintInfo:(PAINTSTRUCT *)&ps];
-      if (ps.hdc) 
+      if (HDC_VALID((HDC__*)ps.hdc)) 
       {
-        if (((GDP_CTX*)ps.hdc)->ctx) CGContextSaveGState(((GDP_CTX*)ps.hdc)->ctx);
+        if (((HDC__*)ps.hdc)->ctx) CGContextSaveGState((ps.hdc)->ctx);
         return ps.hdc;
       }
     }
@@ -1512,7 +1653,7 @@ HDC GetDC(HWND h)
       HDC ret= SWELL_CreateGfxContext([NSGraphicsContext currentContext]);
       if (ret)
       {
-         if (((GDP_CTX*)ret)->ctx) CGContextSaveGState(((GDP_CTX*)ret)->ctx);
+         if ((ret)->ctx) CGContextSaveGState((ret)->ctx);
       }
       return ret;
     }
@@ -1534,7 +1675,7 @@ HDC GetWindowDC(HWND h)
       NSRect b=[v bounds];
       float xsc=b.origin.x;
       float ysc=b.origin.y;
-      if ((xsc || ysc) && ((GDP_CTX*)ret)->ctx) CGContextTranslateCTM(((GDP_CTX*)ret)->ctx,xsc,ysc);
+      if ((xsc || ysc) && (ret)->ctx) CGContextTranslateCTM((ret)->ctx,xsc,ysc);
     }
   }
   return ret;
@@ -1544,11 +1685,10 @@ void ReleaseDC(HWND h, HDC hdc)
 {
   if (hdc)
   {
-    if (((GDP_CTX*)hdc)->ctx) CGContextRestoreGState(((GDP_CTX*)hdc)->ctx);
+    if ((hdc)->ctx) CGContextRestoreGState((hdc)->ctx);
   }
   if (h && [(id)h isKindOfClass:[NSWindow class]])
   {
-    // todo: eventually this can go away (once we move over to fully view based stuff)
     if ([(id)h respondsToSelector:@selector(getSwellPaintInfo:)]) 
     {
       PAINTSTRUCT ps={0,}; 
@@ -1572,10 +1712,11 @@ void ReleaseDC(HWND h, HDC hdc)
   if (isView && hdc)
   {
     [(NSView *)h unlockFocus];
+//    if ([(NSView *)h window]) [[(NSView *)h window] flushWindow];
   }
 }
 
-void SWELL_FillDialogBackground(HDC hdc, RECT *r, int level)
+void SWELL_FillDialogBackground(HDC hdc, const RECT *r, int level)
 {
   CGContextRef ctx=(CGContextRef)SWELL_GetCtxGC(hdc);
   if (ctx)
@@ -1585,6 +1726,173 @@ void SWELL_FillDialogBackground(HDC hdc, RECT *r, int level)
     CGRect rect=CGRectMake(r->left,r->top,r->right-r->left,r->bottom-r->top);
     CGContextFillRect(ctx,rect);	         
   }
+}
+
+HGDIOBJ SWELL_CloneGDIObject(HGDIOBJ a)
+{
+  if (HGDIOBJ_VALID(a))
+  {
+    a->additional_refcnt++;
+    return a;
+  }
+  return NULL;
+}
+
+
+HBITMAP CreateBitmap(int width, int height, int numplanes, int bitsperpixel, unsigned char* bits)
+{
+  int spp = bitsperpixel/8;
+  Boolean hasa = (bitsperpixel == 32);
+  Boolean hasp = (numplanes > 1); // won't actually work yet for planar data
+  NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:0 pixelsWide:width pixelsHigh:height 
+                                                               bitsPerSample:8 samplesPerPixel:spp
+                                                               hasAlpha:hasa isPlanar:hasp
+                                                               colorSpaceName:NSDeviceRGBColorSpace
+                                                                bitmapFormat:NSAlphaFirstBitmapFormat 
+                                                                 bytesPerRow:0 bitsPerPixel:0];    
+  if (!rep) return 0;
+  unsigned char* p = [rep bitmapData];
+  int pspan = [rep bytesPerRow]; // might not be the same as width
+  
+  int y;
+  for (y=0;y<height;y ++)
+  {
+    memcpy(p,bits,width*4);
+    p+=pspan;
+    bits += width*4;
+  }
+
+  NSImage* img = [[NSImage alloc] init];
+  [img addRepresentation:rep]; 
+  [rep release];
+  
+  HGDIOBJ__* obj = GDP_OBJECT_NEW();
+  obj->type = TYPE_BITMAP;
+  obj->wid = 1; // need free
+  obj->bitmapptr = img;
+  return obj;
+}
+
+
+HIMAGELIST ImageList_CreateEx()
+{
+  return (HIMAGELIST)new WDL_PtrList<HGDIOBJ__>;
+}
+
+BOOL ImageList_Remove(HIMAGELIST list, int idx)
+{
+  WDL_PtrList<HGDIOBJ__>* imglist=(WDL_PtrList<HGDIOBJ__>*)list;
+  if (imglist && idx < imglist->GetSize())
+  {
+    if (idx < 0) 
+    {
+      int x,n=imglist->GetSize();
+      for (x=0;x<n;x++)
+      {
+        HGDIOBJ__ *a = imglist->Get(x);
+        if (a) DeleteObject(a);
+      }
+      imglist->Empty();
+    }
+    else 
+    {
+      HGDIOBJ__ *a = imglist->Get(idx);
+      imglist->Set(idx, NULL); 
+      if (a) DeleteObject(a);
+    }
+    return TRUE;
+  }
+  
+  return FALSE;
+}
+
+void ImageList_Destroy(HIMAGELIST list)
+{
+  if (!list) return;
+  ImageList_Remove(list, -1);
+  delete (WDL_PtrList<HGDIOBJ__>*)list;
+}
+
+int ImageList_ReplaceIcon(HIMAGELIST list, int offset, HICON image)
+{
+  if (!image || !list) return -1;
+  WDL_PtrList<HGDIOBJ__> *l=(WDL_PtrList<HGDIOBJ__> *)list;
+
+  HGDIOBJ__ *imgsrc = (HGDIOBJ__*)image;
+  if (!HGDIOBJ_VALID(imgsrc,TYPE_BITMAP)) return -1;
+
+  HGDIOBJ__* icon=GDP_OBJECT_NEW();
+  icon->type=TYPE_BITMAP;
+  icon->wid=1;
+  icon->bitmapptr = imgsrc->bitmapptr; // no need to duplicate it, can just retain a copy
+  [icon->bitmapptr retain];
+  image = (HICON) icon;
+
+  if (offset<0||offset>=l->GetSize()) 
+  {
+    l->Add(image); 
+    offset=l->GetSize()-1;
+  }
+  else
+  {
+    HICON old=l->Get(offset); 
+    l->Set(offset,image);
+    if (old) DeleteObject(old);
+  }
+  return offset;
+}
+
+int ImageList_Add(HIMAGELIST list, HBITMAP image, HBITMAP mask)
+{
+  if (!image || !list) return -1;
+  WDL_PtrList<HGDIOBJ__> *l=(WDL_PtrList<HGDIOBJ__> *)list;
+  
+  HGDIOBJ__ *imgsrc = (HGDIOBJ__*)image;
+  if (!HGDIOBJ_VALID(imgsrc,TYPE_BITMAP)) return -1;
+  
+  HGDIOBJ__* icon=GDP_OBJECT_NEW();
+  icon->type=TYPE_BITMAP;
+  icon->wid=1;
+  NSImage *nsimg = [imgsrc->bitmapptr copy]; // caller still owns the image
+  [nsimg setFlipped:YES];
+  icon->bitmapptr = nsimg;
+  image = (HICON) icon;
+  
+  l->Add(image);
+  return l->GetSize();
+}
+
+int AddFontResourceEx(LPCTSTR str, DWORD fl, void *pdv)
+{
+  if (SWELL_GetOSXVersion() < 0x1060)  return 0;
+  static bool l;
+  static bool (*_CTFontManagerRegisterFontsForURL)( CFURLRef fontURL, uint32_t scope, CFErrorRef *error );
+  if (!l)
+  {
+    CFBundleRef b = CFBundleGetBundleWithIdentifier(CFSTR("com.apple.CoreText"));
+    if (b)
+    {
+      *(void **)&_CTFontManagerRegisterFontsForURL = CFBundleGetFunctionPointerForName(b,CFSTR("CTFontManagerRegisterFontsForURL"));
+    }
+
+    l=true;
+  }
+  
+  if (!_CTFontManagerRegisterFontsForURL) return 0;
+  
+  CFStringRef s=(CFStringRef)SWELL_CStringToCFString(str); 
+
+  CFURLRef r=CFURLCreateWithFileSystemPath(NULL,s,kCFURLPOSIXPathStyle,true);
+  CFErrorRef err=NULL;
+  const int v = _CTFontManagerRegisterFontsForURL(r,
+      (fl & FR_PRIVATE) ? 1/*kCTFontManagerScopeProcess*/ : 2/*kCTFontManagerScopeUser*/,
+      &err)?1:0;
+
+  // release err? don't think so
+
+  CFRelease(s);
+  CFRelease(r);
+  return v;
 }
 
 

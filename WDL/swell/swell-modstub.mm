@@ -8,7 +8,6 @@
 
 // only include this file in projects that are linked to swell.dylib
 
-struct SWELL_CursorResourceIndex *SWELL_curmodule_cursorresource_head;
 struct SWELL_DialogResourceIndex *SWELL_curmodule_dialogresource_head;
 struct SWELL_MenuResourceIndex *SWELL_curmodule_menuresource_head;
 
@@ -24,7 +23,7 @@ static struct
 #undef SWELL_API_DEFINE
 #define SWELL_API_DEFINE(ret, func, parms) {#func, (void **)&func },
 
-#include "swell.h"
+#include "swell-functions.h"
   
 };
 
@@ -49,7 +48,7 @@ public:
       *api_tab[x].func=SWELLAPI_GetFunc?SWELLAPI_GetFunc(api_tab[x].name):0;
       if (!*api_tab[x].func)
       {
-        printf("SWELL API not found: %s\n",api_tab[x].func);
+        printf("SWELL API not found: %s\n",api_tab[x].name);
         *api_tab[x].func = (void*)&dummyFunc;
       }
     }
@@ -60,5 +59,11 @@ public:
 };
 
 SwellAPPInitializer m_swell_appAPIinit;
+
+extern "C" __attribute__ ((visibility ("default"))) int SWELL_dllMain(HINSTANCE hInst, DWORD callMode, LPVOID _GetFunc)
+{
+  // this returning 1 allows DllMain to be called, if available
+  return 1;
+}
 
 #endif

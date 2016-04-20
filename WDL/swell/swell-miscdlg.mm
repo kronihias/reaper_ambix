@@ -28,6 +28,7 @@
 #ifndef SWELL_PROVIDED_BY_APP
 
 #include "swell.h"
+#include "../wdlcstring.h"
 #import <Cocoa/Cocoa.h>
 static NSMutableArray *extensionsFromList(const char *extlist)
 {
@@ -42,7 +43,7 @@ static NSMutableArray *extensionsFromList(const char *extlist)
 			if (!*extlist) break;
 			extlist++;
 			char tmp[32];
-			lstrcpyn(tmp,extlist,sizeof(tmp));
+			lstrcpyn_safe(tmp,extlist,sizeof(tmp));
 			if (strstr(tmp,";")) strstr(tmp,";")[0]=0;
 			if (tmp[0] && tmp[0]!='*')
 			{
@@ -59,10 +60,10 @@ static NSMutableArray *extensionsFromList(const char *extlist)
 	return fileTypes;
 }
 
-static int BFSF_Templ_dlgid;
+static const char *BFSF_Templ_dlgid;
 static DLGPROC BFSF_Templ_dlgproc;
 static struct SWELL_DialogResourceIndex *BFSF_Templ_reshead;
-void BrowseFile_SetTemplate(int dlgid, DLGPROC dlgProc, struct SWELL_DialogResourceIndex *reshead)
+void BrowseFile_SetTemplate(const char *dlgid, DLGPROC dlgProc, struct SWELL_DialogResourceIndex *reshead)
 {
   BFSF_Templ_reshead=reshead;
   BFSF_Templ_dlgid=dlgid;
@@ -94,7 +95,7 @@ bool BrowseForSaveFile(const char *text, const char *initialdir, const char *ini
 	if (initialfile && *initialfile)
 	{
 		char s[2048];
-		lstrcpyn(s,initialfile,sizeof(s));
+		lstrcpyn_safe(s,initialfile,sizeof(s));
 		char *p=s;
 		while (*p) p++;
 		while (p >= s && *p != '/') p--;
@@ -132,7 +133,7 @@ bool BrowseForSaveFile(const char *text, const char *initialdir, const char *ini
 		SWELL_CFStringToCString([panel filename],buf,(sizeof(buf)-1));
 		if (buf[0])
 		{
-			lstrcpyn(fn,buf,fnsize);
+			lstrcpyn_safe(fn,buf,fnsize);
 			return true;
 		}
 	}
@@ -148,6 +149,7 @@ bool BrowseForDirectory(const char *text, const char *initialdir, char *fn, int 
 	[panel setTitle:title];
 	[panel setAllowsMultipleSelection:NO];
 	[panel setCanChooseFiles:NO];
+	[panel setCanCreateDirectories:YES];
 	[panel setCanChooseDirectories:YES];
 	[panel setResolvesAliases:YES];
 
@@ -222,7 +224,7 @@ char *BrowseForFiles(const char *text, const char *initialdir,
 	if (initialfile && *initialfile)
 	{
 		char s[2048];
-		lstrcpyn(s,initialfile,sizeof(s));
+		lstrcpyn_safe(s,initialfile,sizeof(s));
 		char *p=s;
 		while (*p) p++;
 		while (p >= s && *p != '/') p--;
@@ -310,44 +312,44 @@ int MessageBox(HWND hwndParent, const char *text, const char *caption, int type)
   
   int ret=0;
 
-  NSString *tit=(NSString *)SWELL_CStringToCFString(caption); 
-  NSString *tex=(NSString *)SWELL_CStringToCFString(text); 
+  NSString *tit=(NSString *)SWELL_CStringToCFString(caption?caption:""); 
+  NSString *text2=(NSString *)SWELL_CStringToCFString(text?text:"");
   
   if (type == MB_OK)
   {
-    NSRunAlertPanel(tit,tex,@"OK",@"",@"");
+    NSRunAlertPanel(tit,@"%@",@"OK",@"",@"",text2);
     ret=IDOK;
   }	
   else if (type == MB_OKCANCEL)
   {
-    ret=NSRunAlertPanel(tit,tex,@"OK",@"Cancel",@"");
+    ret=NSRunAlertPanel(tit,@"%@",@"OK",@"Cancel",@"",text2);
     if (ret) ret=IDOK;
     else ret=IDCANCEL;
   }
   else if (type == MB_YESNO)
   {
-    ret=NSRunAlertPanel(tit,tex,@"Yes",@"No",@"");
+    ret=NSRunAlertPanel(tit,@"%@",@"Yes",@"No",@"",text2);
   //  printf("ret=%d\n",ret);
     if (ret) ret=IDYES;
     else ret=IDNO;
   }
   else if (type == MB_RETRYCANCEL)
   {
-    ret=NSRunAlertPanel(tit,tex,@"Retry",@"Cancel",@"");
+    ret=NSRunAlertPanel(tit,@"%@",@"Retry",@"Cancel",@"",text2);
 //    printf("ret=%d\n",ret);
     if (ret) ret=IDRETRY;
     else ret=IDCANCEL;
   }
   else if (type == MB_YESNOCANCEL)
   {
-    ret=NSRunAlertPanel(tit,tex,@"Yes",@"Cancel",@"No");   
+    ret=NSRunAlertPanel(tit,@"%@",@"Yes",@"Cancel",@"No",text2);
     if (ret == 1) ret=IDYES;
     else if (ret==-1) ret=IDNO;
     else ret=IDCANCEL;
   }
   
+  [text2 release];
   [tit release];
-  [tex release];
   
   return ret; 
 }

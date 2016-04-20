@@ -57,6 +57,7 @@
 #define _CONNECTION_H_
 
 #include "asyncdns.h"
+#include "netinc.h"
 
 #define JNL_CONNECTION_AUTODNS ((JNL_IAsyncDNS*)-1)
 
@@ -67,12 +68,12 @@ class JNL_IConnection
 {
   public:
     virtual ~JNL_IConnection() { }
-    virtual void connect(char *hostname, int port)=0;
-    virtual void connect(int sock, struct sockaddr_in *loc=NULL)=0; // used by the listen object, usually not needed by users.
+    virtual void connect(const char *hostname, int port)=0;
+    virtual void connect(SOCKET sock, struct sockaddr_in *loc=NULL)=0; // used by the listen object, usually not needed by users.
 
     virtual void run(int max_send_bytes=-1, int max_recv_bytes=-1, int *bytes_sent=NULL, int *bytes_rcvd=NULL)=0;
     virtual int  get_state()=0;
-    virtual char *get_errstr()=0;
+    virtual const char *get_errstr()=0;
 
     virtual void close(int quick=0)=0;
     virtual void flush_send(void)=0;
@@ -92,8 +93,8 @@ class JNL_IConnection
                                               // the connection has.)
     virtual int peek_bytes(void *data, int maxlength)=0; // returns bytes peeked
 
-    virtual unsigned long get_interface(void)=0;        // this returns the interface the connection is on
-    virtual unsigned long get_remote(void)=0; // remote host ip.
+    virtual unsigned int get_interface(void)=0;        // this returns the interface the connection is on
+    virtual unsigned int get_remote(void)=0; // remote host ip.
     virtual short get_remote_port(void)=0; // this returns the remote port of connection
 
     virtual void set_interface(int useInterface)=0; // call before connect if needed
@@ -124,12 +125,12 @@ class JNL_Connection JNL_Connection_PARENTDEF
     JNL_Connection(JNL_IAsyncDNS *dns=JNL_CONNECTION_AUTODNS, int sendbufsize=8192, int recvbufsize=8192);
     ~JNL_Connection();
 
-    void connect(char *hostname, int port);
-    void connect(int sock, struct sockaddr_in *loc=NULL); // used by the listen object, usually not needed by users.
+    void connect(const char *hostname, int port);
+    void connect(SOCKET sock, struct sockaddr_in *loc=NULL); // used by the listen object, usually not needed by users.
 
     void run(int max_send_bytes=-1, int max_recv_bytes=-1, int *bytes_sent=NULL, int *bytes_rcvd=NULL);
     int  get_state() { return m_state; }
-    char *get_errstr() { return m_errorstr; }
+    const char *get_errstr() { return m_errorstr; }
 
     void close(int quick=0);
     void flush_send(void) { m_send_len=m_send_pos=0; }
@@ -150,14 +151,14 @@ class JNL_Connection JNL_Connection_PARENTDEF
                                               // the connection has.)
     int peek_bytes(void *data, int maxlength); // returns bytes peeked
 
-    unsigned long get_interface(void);        // this returns the interface the connection is on
-    unsigned long get_remote(void); // remote host ip.
+    unsigned int get_interface(void);        // this returns the interface the connection is on
+    unsigned int get_remote(void); // remote host ip.
     short get_remote_port(void); // this returns the remote port of connection
   
     void set_interface(int useInterface); // call before connect if needed
 
   protected:
-    int  m_socket;
+    SOCKET m_socket;
     short m_remote_port;
     char *m_recv_buffer;
     char *m_send_buffer;
@@ -177,7 +178,7 @@ class JNL_Connection JNL_Connection_PARENTDEF
     int m_dns_owned;
 
     state m_state;
-    char *m_errorstr;
+    const char *m_errorstr;
 
     int getbfromrecv(int pos, int remove); // used by recv_line*
 

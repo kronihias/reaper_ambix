@@ -32,91 +32,135 @@
 
 
 #include "swell.h"
-#include "../ptrlist.h"
+#include "../assocarray.h"
+#include "../wdlcstring.h"
 #include "../mutex.h"
 #include "../queue.h"
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/types.h>
 
-class SWELL_ini_section
+static void deleteStringKeyedArray(WDL_StringKeyedArray<char *> *p) {   delete p; }
+
+struct iniFileContext
 {
-public:
-  SWELL_ini_section(const char *name)
-  {
-    m_name=strdup(name);
-  }
-  ~SWELL_ini_section()
+  iniFileContext() : m_sections(false,deleteStringKeyedArray) 
   { 
-    free(m_name);
-    m_items.Empty(true,free);
+    m_curfn=NULL;
+    m_lastaccesscnt=0;
+    m_curfn_time=0;
+    m_curfn_sz=0;
   }
+  ~iniFileContext() { }
   
-  int FindItem(const char *name)
-  {
-    int ln=strlen(name);
-    int x;
-    for (x = 0; x < m_items.GetSize(); x ++)
-    {
-      char *p=m_items.Get(x);
-      if (!strnicmp(p,name,ln) && p[ln]=='=') 
-      {
-        return x;
-      }
-    }
-    return -1;
-  }
-  
-  char *m_name;
-  WDL_PtrList<char> m_items;
+  WDL_UINT64 m_lastaccesscnt;
+  time_t m_curfn_time;
+  int m_curfn_sz;
+  char *m_curfn;
+
+  WDL_StringKeyedArray< WDL_StringKeyedArray<char *> * > m_sections;
+
 };
 
-
-static WDL_PtrList<SWELL_ini_section> m_sections;
-static char *m_curfn;
-static time_t m_curfn_time;
-static FILE *m_curfp;
+#define NUM_OPEN_CONTEXTS 32
+static iniFileContext s_ctxs[NUM_OPEN_CONTEXTS];
 static WDL_Mutex m_mutex;
 
-static time_t getfileupdtime(FILE *fp)
+static time_t getfileupdtimesize(const char *fn, int *szOut)
 {
-  if (!fp) return 0;
   struct stat st;
-  if (fstat(fileno(fp),&st)) return 0;
+  *szOut = 0;
+  if (!fn || !fn[0] || stat(fn,&st)) return 0;
+  *szOut = (int)st.st_size;
   return st.st_mtime;
 }
 
-// return true on success
-static bool SetTheFile(const char *name)
+static bool fgets_to_typedbuf(WDL_TypedBuf<char> *buf, FILE *fp) 
 {
-  if (!m_curfn || stricmp(m_curfn,name) || !m_curfp || m_curfn_time != getfileupdtime(m_curfp))
+  int rdpos=0;
+  while (rdpos < 1024*1024*32)
   {
-    m_sections.Empty(true);
-//    printf("reinitting to %s\n",name);
-    free(m_curfn);
-    m_curfn=strdup(name);
-    if (m_curfp) fclose(m_curfp);
-    m_curfp=fopen(name,"r");
-    
-    if (!m_curfp) 
+    if (buf->GetSize()<rdpos+8192) buf->Resize(rdpos+8192);
+    if (buf->GetSize()<rdpos+4) break; // malloc fail, erg
+    char *p = buf->Get()+rdpos;
+    *p=0;
+    fgets(p,buf->GetSize()-rdpos,fp); 
+    if (!*p) break;
+    while (*p) p++;
+    if (p[-1] == '\r' || p[-1] == '\n') break;
+
+    rdpos = p - buf->Get();
+  }
+  return buf->GetSize()>0 && buf->Get()[0];
+}
+
+
+// return true on success
+static iniFileContext *GetFileContext(const char *name)
+{
+  static WDL_UINT64 acc_cnt;
+  int best_z = 0;
+  {
+    int w;
+    WDL_UINT64 bestcnt = 0; 
+    bestcnt--;
+
+    for (w=0;w<NUM_OPEN_CONTEXTS;w++)
     {
-//      printf("error opening %s\n",m_curfn);
-      return false;
+      if (!s_ctxs[w].m_curfn || !stricmp(s_ctxs[w].m_curfn,name)) 
+      {
+        // we never clear m_curfn, so we'll always find an item in cache before an unused cache entry
+        best_z=w;
+        break;
+      }
+
+      if (s_ctxs[w].m_lastaccesscnt < bestcnt) { best_z = w; bestcnt = s_ctxs[w].m_lastaccesscnt; }
     }
-    flockfile(m_curfp);
+  }
     
+  iniFileContext *ctx = &s_ctxs[best_z];
+  ctx->m_lastaccesscnt=++acc_cnt;
+  
+  int sz=0;
+  if (!ctx->m_curfn || stricmp(ctx->m_curfn,name) || ctx->m_curfn_time != getfileupdtimesize(ctx->m_curfn,&sz) || sz != ctx->m_curfn_sz)
+  {
+    ctx->m_sections.DeleteAll();
+//    printf("reinitting to %s\n",name);
+    if (!ctx->m_curfn || stricmp(ctx->m_curfn,name))
+    {
+      free(ctx->m_curfn);
+      ctx->m_curfn=strdup(name);
+    }
+    FILE *fp = fopen(name,"r");
+    
+    if (!fp)
+    {
+      ctx->m_curfn_time=0;
+      ctx->m_curfn_sz=0;
+      return ctx; // allow to proceed (empty file)
+    }
+
+    flock(fileno(fp),LOCK_SH);
     
     // parse .ini file
-    SWELL_ini_section *cursec=NULL;
-    char buf[32768];
+    WDL_StringKeyedArray<char *> *cursec=NULL;
+
     int lcnt=0;
     for (;;)
     {
-      buf[0]=0;
-      fgets(buf,m_sections.GetSize()?sizeof(buf):2048,m_curfp); // until we get a secction, read max of 2k (meaning the first section name has to be <2k)
-      if (!buf[0] || feof(m_curfp)) break;
+      static WDL_TypedBuf<char> _buf;
+      if (!fgets_to_typedbuf(&_buf,fp)) break;
+
+      char *buf = _buf.Get();
+      if (!ctx->m_sections.GetSize()) 
+      {
+        lcnt += strlen(buf);
+        if (lcnt > 256*1024) break; // dont bother reading more than 256kb if no section encountered
+      }
       char *p=buf;
-      if (lcnt++ == 8 && !m_sections.GetSize()) break; // dont bother reading more than 8 lines if no section encountered
+
       while (*p) p++;
+
       if (p>buf)
       {
         p--;
@@ -132,127 +176,262 @@ static bool SetTheFile(const char *name)
         if (*p2)
         {
           *p2=0;
+          if (cursec) cursec->Resort();
+          
           if (p[1])
-            m_sections.Add(cursec=new SWELL_ini_section(p+1));
+          {
+            cursec = ctx->m_sections.Get(p+1);
+            if (!cursec)
+            {
+              cursec = new WDL_StringKeyedArray<char *>(false,WDL_StringKeyedArray<char *>::freecharptr);
+              ctx->m_sections.Insert(p+1,cursec);
+            }
+            else cursec->DeleteAll();
+          }
           else cursec=0;
         }
       }
       else if (cursec)
       {
         char *t=strstr(p,"=");
-        if (t && t > p)
-          cursec->m_items.Add(strdup(p));
+        if (t)
+        {
+          *t++=0;
+          if (*p) 
+            cursec->AddUnsorted(p,strdup(t));
+        }
       }
     }
-    m_curfn_time = getfileupdtime(m_curfp);
-    funlockfile(m_curfp);    
+    ctx->m_curfn_time = getfileupdtimesize(name,&ctx->m_curfn_sz);
+    flock(fileno(fp),LOCK_UN);    
+    fclose(fp);
+
+    if (cursec) cursec->Resort();
   }
-  return true;
+  return ctx;
 }
 
-static void WriteBackFile()
+static void WriteBackFile(iniFileContext *ctx)
 {
-  if (!m_curfn) return;
-  if (m_curfp) fclose(m_curfp);
-  m_curfp=fopen(m_curfn,"w");
-  if (!m_curfp) return;
-  flockfile(m_curfp);
+  if (!ctx||!ctx->m_curfn) return;
+  char newfn[1024];
+  lstrcpyn_safe(newfn,ctx->m_curfn,sizeof(newfn)-8);
+  {
+    char *p=newfn;
+    while (*p) p++;
+    while (p>newfn && p[-1] != '/') p--;
+    char lc = '.';
+    while (*p)
+    {
+      char c = *p;
+      *p++ = lc;
+      lc = c;
+    }
+    *p++ = lc;
+    strcpy(p,".new");
+  }
+
+  FILE *fp = fopen(newfn,"w");
+  if (!fp) return;
+  
+  flock(fileno(fp),LOCK_EX);
   
   int x;
-  for (x = 0; x < m_sections.GetSize(); x ++)
+  for (x = 0; ; x ++)
   {
-    SWELL_ini_section *cursec=m_sections.Get(x);
-    fprintf(m_curfp,"[%s]\n",cursec->m_name);
+    const char *secname=NULL;
+    WDL_StringKeyedArray<char *> * cursec = ctx->m_sections.Enumerate(x,&secname);
+    if (!cursec || !secname) break;
+    
+    fprintf(fp,"[%s]\n",secname);
     int y;
-    for (y=0;y<cursec->m_items.GetSize();y++)
+    for (y=0;;y++)
     {
-      fprintf(m_curfp,"%s\n",cursec->m_items.Get(y));
+      const char *keyname = NULL;
+      const char *keyvalue = cursec->Enumerate(y,&keyname);
+      if (!keyvalue || !keyname) break;
+      if (*keyname) fprintf(fp,"%s=%s\n",keyname,keyvalue);
     }
-    fprintf(m_curfp,"\n");
+    fprintf(fp,"\n");
   }  
   
-  fflush(m_curfp);
-  m_curfn_time = getfileupdtime(m_curfp);
-  funlockfile(m_curfp);
+  fflush(fp);
+  flock(fileno(fp),LOCK_UN);
+  fclose(fp);
+
+  if (!rename(newfn,ctx->m_curfn))
+  {
+    ctx->m_curfn_time = getfileupdtimesize(ctx->m_curfn,&ctx->m_curfn_sz);
+  }
+  else
+  {
+    // error updating, hmm how to handle this?
+  }
+}
+
+BOOL WritePrivateProfileSection(const char *appname, const char *strings, const char *fn)
+{
+  if (!appname || !fn) return FALSE;
+  WDL_MutexLock lock(&m_mutex);
+  iniFileContext *ctx = GetFileContext(fn);
+  if (!ctx) return FALSE;
+
+  WDL_StringKeyedArray<char *> * cursec = ctx->m_sections.Get(appname);
+  if (!cursec)
+  {
+    if (!*strings) return TRUE;
+    
+    cursec = new WDL_StringKeyedArray<char *>(false,WDL_StringKeyedArray<char *>::freecharptr);   
+    ctx->m_sections.Insert(appname,cursec);
+  }
+  else cursec->DeleteAll();
   
+  if (*strings)
+  {
+    while (*strings)
+    {
+      char buf[8192];
+      lstrcpyn_safe(buf,strings,sizeof(buf));
+      char *p = buf;
+      while (*p && *p != '=') p++;
+      if (*p)
+      {
+        *p++=0;
+        cursec->Insert(buf,strdup(strings + (p-buf)));
+      }
+      
+      strings += strlen(strings)+1;
+    }
+  }
+  WriteBackFile(ctx);
+  
+  return TRUE;
 }
 
 
 BOOL WritePrivateProfileString(const char *appname, const char *keyname, const char *val, const char *fn)
 {
-  if ((appname && !*appname) || (keyname && !*keyname)) return FALSE;
+  if (!appname || (keyname && !*keyname)) return FALSE;
 //  printf("writing %s %s %s %s\n",appname,keyname,val,fn);
   WDL_MutexLock lock(&m_mutex);
   
-  SetTheFile(fn);
-  
-  int x;
-  int doWrite=0;
-  int hadsec=0;
-  for (x = 0; x < m_sections.GetSize(); x ++)
+  iniFileContext *ctx = GetFileContext(fn);
+  if (!ctx) return FALSE;
+    
+  if (!keyname)
   {
-    if (!stricmp(m_sections.Get(x)->m_name,appname))
+    if (ctx->m_sections.Get(appname))
     {
-      hadsec=1;
-      if (!keyname)
-      {
-        m_sections.Delete(x,true);
-        doWrite=1;
-        break;
-      }
-      int f=m_sections.Get(x)->FindItem(keyname);
-      if (f<0) 
-      {
-        if (val)
-        {
-          char *buf=(char *)malloc(strlen(keyname)+strlen(val)+2);
-          sprintf(buf,"%s=%s",keyname,val);
-          m_sections.Get(x)->m_items.Add(buf);
-          doWrite=1;
-        }
-      }
-      else
-      {
-        if (!val)
-        {
-          m_sections.Get(x)->m_items.Delete(f,true,free);
-          if (!m_sections.Get(x)->m_items.GetSize())
-            m_sections.Delete(x,true);
-          doWrite=1;
-        }
-        else
-        {
-          if (strcmp(m_sections.Get(x)->m_items.Get(f)+strlen(keyname)+1,val))
-          {
-            free(m_sections.Get(x)->m_items.Get(f));
-            char *buf=(char *)malloc(strlen(keyname)+strlen(val)+2);
-            sprintf(buf,"%s=%s",keyname,val);
-            m_sections.Get(x)->m_items.Set(f,buf);
-            doWrite=1;
-          }
-        }
-      }
-      break;
+      ctx->m_sections.Delete(appname);
+      WriteBackFile(ctx);
     }
   }
-  if (!hadsec && appname && val)
+  else 
   {
-    SWELL_ini_section *newsec=new SWELL_ini_section(appname);
-    char *buf=(char *)malloc(strlen(keyname)+strlen(val)+2);
-    sprintf(buf,"%s=%s",keyname,val);
-    newsec->m_items.Add(buf);
-    m_sections.Add(newsec);
-    doWrite=1;
-    
+    WDL_StringKeyedArray<char *> * cursec = ctx->m_sections.Get(appname);
+    if (!val)
+    {
+      if (cursec && cursec->Get(keyname))
+      {
+        cursec->Delete(keyname);
+        WriteBackFile(ctx);
+      }
+    }
+    else
+    {
+      const char *p;
+      if (!cursec || !(p=cursec->Get(keyname)) || strcmp(p,val))
+      {
+        if (!cursec) 
+        {
+          cursec = new WDL_StringKeyedArray<char *>(false,WDL_StringKeyedArray<char *>::freecharptr);   
+          ctx->m_sections.Insert(appname,cursec);
+        }
+        cursec->Insert(keyname,strdup(val));
+        WriteBackFile(ctx);
+      }
+    }
+
   }
-  
-  
-  if (doWrite) 
-  {
-//    printf("writing back!\n");
-    WriteBackFile();
-  }
+
   return TRUE;
+}
+
+static void lstrcpyn_trimmed(char* dest, const char* src, int len)
+{
+  if (len<1) return;
+  // Mimic Win32 behavior of stripping quotes and whitespace
+  while (*src==' ' || *src=='\t') ++src; // Strip beginning whitespace
+
+  const char *end = src;
+  if (*end) while (end[1]) end++;
+
+  while (end >= src && (*end==' ' || *end=='\t')) --end; // Strip end whitespace
+
+  if (end > src && ((*src=='\"' && *end=='\"') || (*src=='\'' && *end=='\'')))
+  {	
+    // Strip initial set of "" or ''
+    ++src; 
+    --end;
+  }
+
+  int newlen = (int) (end-src+2);
+  if (newlen < 1) newlen = 1;
+  else if (newlen > len) newlen = len;
+
+  lstrcpyn_safe(dest, src, newlen);
+}	
+
+DWORD GetPrivateProfileSection(const char *appname, char *strout, DWORD strout_len, const char *fn)
+{
+  WDL_MutexLock lock(&m_mutex);
+  
+  if (!strout || strout_len<2) 
+  {
+    if (strout && strout_len==1) *strout=0;
+    return 0;
+  }
+  iniFileContext *ctx= GetFileContext(fn);
+  int szOut=0;
+  WDL_StringKeyedArray<char *> *cursec = ctx ? ctx->m_sections.Get(appname) : NULL;
+
+  if (ctx && cursec) 
+  {
+    int x;
+    for(x=0;x<cursec->GetSize();x++)
+    {
+      const char *kv = NULL;
+      const char *val = cursec->Enumerate(x,&kv);
+      if (val && kv)
+      {        
+        int l;
+       
+#define WRSTR(v) \
+        l= strlen(v); \
+        if (l > (int)strout_len - szOut - 2) l = (int)strout_len - 2 - szOut; \
+        if (l>0) { memcpy(strout+szOut,v,l); szOut+=l; }
+        
+        WRSTR(kv)
+        WRSTR("=")
+#undef WRSTR
+
+        lstrcpyn_trimmed(strout+szOut, val, (int)strout_len - szOut - 2);
+        szOut += strlen(strout+szOut);
+
+        l=1;
+        if (l > (int)strout_len - szOut - 1) l = (int)strout_len - 1 - szOut;
+        if (l>0) { memset(strout+szOut,0,l); szOut+=l; }
+        if (szOut >= (int)strout_len-1)
+        {
+          strout[strout_len-1]=0;
+          return strout_len-2;
+        }
+      }
+    }
+  }
+  strout[szOut]=0;
+  if (!szOut) strout[1]=0;
+  return szOut;
 }
 
 DWORD GetPrivateProfileString(const char *appname, const char *keyname, const char *def, char *ret, int retsize, const char *fn)
@@ -260,38 +439,34 @@ DWORD GetPrivateProfileString(const char *appname, const char *keyname, const ch
   WDL_MutexLock lock(&m_mutex);
   
 //  printf("getprivateprofilestring: %s\n",fn);
-  if (SetTheFile(fn))
+  iniFileContext *ctx= GetFileContext(fn);
+  
+  if (ctx)
   {
     if (!appname||!keyname)
     {
       WDL_Queue tmpbuf;
-      int x;
-      // todo: querying section and item lists, etc.
       if (!appname)
       {
-        for (x = 0; x < m_sections.GetSize(); x ++)
-          tmpbuf.Add(m_sections.Get(x)->m_name,strlen(m_sections.Get(x)->m_name)+1);
+        int x;
+        for (x = 0;; x ++)
+        {
+          const char *secname=NULL;
+          if (!ctx->m_sections.Enumerate(x,&secname) || !secname) break;
+          if (*secname) tmpbuf.Add(secname,strlen(secname)+1);
+        }
       }
       else
       {
-        for (x = 0; x < m_sections.GetSize(); x ++)
+        WDL_StringKeyedArray<char *> *cursec = ctx->m_sections.Get(appname);
+        if (cursec)
         {
-          if (!stricmp(m_sections.Get(x)->m_name,appname))
-          {
-            int y;
-            for (y = 0; y < m_sections.Get(x)->m_items.GetSize(); y ++)
-            {
-              char * p = m_sections.Get(x)->m_items.Get(y);
-              char *np=p;
-              while (*np && *np != '=') np++;
-              if (np>p)
-              {
-                tmpbuf.Add(p,np-p);
-                char c=0;
-                tmpbuf.Add(&c,1);
-              }
-            }
-            break;
+          int y;
+          for (y = 0; ; y ++)
+          {            
+            const char *keyname=NULL;
+            if (!cursec->Enumerate(y,&keyname)||!keyname) break;
+            if (*keyname) tmpbuf.Add(keyname,strlen(keyname)+1);
           }
         }
       }
@@ -309,26 +484,19 @@ DWORD GetPrivateProfileString(const char *appname, const char *keyname, const ch
       return sz;
     }
     
-    int x;
-    for (x = 0; x < m_sections.GetSize(); x ++)
+    WDL_StringKeyedArray<char *> *cursec = ctx->m_sections.Get(appname);
+    if (cursec)
     {
-      if (!stricmp(m_sections.Get(x)->m_name,appname))
+      const char *val = cursec->Get(keyname);
+      if (val)
       {
-        int f=m_sections.Get(x)->FindItem(keyname);
-        if (f<0) 
-        {
-  //        printf("got seciton, no keyname\n");
-          break;
-        }
-        // woo, got our result!
-        lstrcpyn(ret,m_sections.Get(x)->m_items.Get(f)+strlen(keyname)+1,retsize);
-//        printf("got %s %s %s %s\n",appname,keyname,ret,fn);
+        lstrcpyn_trimmed(ret,val,retsize);
         return strlen(ret);
       }
     }
   }
 //  printf("def %s %s %s %s\n",appname,keyname,def,fn);
-  lstrcpyn(ret,def?def:"",retsize);
+  lstrcpyn_safe(ret,def?def:"",retsize);
   return strlen(ret);
 }
 
