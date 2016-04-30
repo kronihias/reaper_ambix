@@ -18,6 +18,16 @@
 
 #include "resource.h"
 
+/* include adapter matrices */
+#include "adaptermatrices/adapter_hemi.h"
+#include "adaptermatrices/adapter_circular.h"
+
+/*          */
+
+#if !defined(ARRAY_SIZE)
+  #define ARRAY_SIZE(x) (sizeof((x)) / sizeof((x)[0]))
+#endif
+
 // short for AMbixSInk
 #define SINK_FOURCC REAPER_FOURCC('a','m','s','i')
 
@@ -31,6 +41,9 @@ extern ambix_matrix_t* (*ptr_ambix_matrix_create) (void) ;
 extern void (*ptr_ambix_matrix_destroy) (ambix_matrix_t *mtx) ;
 extern ambix_matrix_t* (*ptr_ambix_matrix_init) (uint32_t rows, uint32_t cols, ambix_matrix_t *mtx) ;
 extern ambix_matrix_t * 	(*ptr_ambix_matrix_fill) (ambix_matrix_t *matrix, ambix_matrixtype_t type);
+extern ambix_err_t 	(*ptr_ambix_matrix_fill_data) (ambix_matrix_t *mtx, const float32_t *data);
+extern ambix_matrix_t* (*ptr_ambix_matrix_pinv)(const ambix_matrix_t*matrix, ambix_matrix_t*pinv);
+extern ambix_err_t 	(*ptr_ambix_matrix_multiply_float64) (float64_t *dest, const ambix_matrix_t *mtx, const float64_t *source, int64_t frames);
 
 
 extern void (*format_timestr)(double tpos, char *buf, int buflen);
@@ -42,6 +55,35 @@ extern HWND g_main_hwnd;
 
 extern HINSTANCE g_hInst;
 #define WIN32_FILE_IO
+
+
+/*
+ Settings List:
+ 0: Format (ambix_fileformat_t) -> 1: Basic, 2: Extended
+ 1: Order (INT)
+ 2: SampleFormat (INT): 0: 16bit PCM, 1: 24 bit PCM, 2: 32 bit PCM, 3: 32 bit float, 4: 64 bit float
+ 3: NumExtraChannels (INT)
+ 4: Selected Reduction Method
+ 4: do reduction (bool)
+ 
+ // AdaptorMatrix
+ 5: rows (uint32_t)
+ 6: cols (uint32_t)
+ 7......7+(rows*cols): data (float32_t)
+ */
+typedef struct {
+  int	fourCC;
+	ambix_fileformat_t format;
+  uint32_t order;
+  uint32_t sampleformat;
+  uint32_t numextrachannels;
+  uint32_t reduction_sel;
+  int doreduction;
+  // adaptor matrix
+  uint32_t rows;
+  uint32_t cols;
+  // float32_t *data is extra
+} AMBIXSINK_CONFIG;
 
 
 void post_matrix(ambix_matrix_t *matrix)
@@ -67,66 +109,138 @@ public:
   {
     printf("creating sink...\n");
     
+    m_isopen = false;
+    
     m_peakbuild=0;
     
     m_fh = 0;
     
-    
-    m_nch=nch;
+    m_in_ch=nch;
     m_srate=srate;
     m_lensamples=0;
     m_filesize=0;
     m_fn.Set(fn);
     
+    m_adapter_matrix = NULL; // this one gets passed
+    m_inverse_adapter_matrix = NULL;
+    
+    
     // retrieve settings
-    /*
-     Settings List:
-     0: Format (INT) -> 0: Basic, 1: Extended
-     1: Order (INT)
-     2: SampleFormat (INT): 0: 16bit PCM, 1: 24 bit PCM, 2: 32 bit PCM, 3: 32 bit float, 4: 64 bit float
-     3: NumExtraChannels (INT)
-     4: AdaptorMatrix Filename (char*)
-     */
     
     if (cfgdata_l >= 32 && *((int *)cfgdata) == SINK_FOURCC)
     {
-      m_format = REAPER_MAKELEINT(((int *)(((unsigned char *)cfgdata)+4))[0]);
-      m_order = REAPER_MAKELEINT(((int *)(((unsigned char *)cfgdata)+4))[1]);
-      m_sampleformat = REAPER_MAKELEINT(((int *)(((unsigned char *)cfgdata)+4))[2]);
-      m_xtrachannels = REAPER_MAKELEINT(((int *)(((unsigned char *)cfgdata)+4))[3]);
+      AMBIXSINK_CONFIG *pAmbixConfigData = (AMBIXSINK_CONFIG *) cfgdata;
       
+      m_fileformat = pAmbixConfigData->format;
+      m_order = REAPER_MAKELEINT(pAmbixConfigData->order);
+      m_sampleformat = REAPER_MAKELEINT(pAmbixConfigData->sampleformat);
+      
+      if (!m_sampleformat)
+        m_sampleformat = AMBIX_SAMPLEFORMAT_PCM24; // default fallback
+      
+      m_xtrachannels = REAPER_MAKELEINT(pAmbixConfigData->numextrachannels);
+      
+      m_doreduction = (pAmbixConfigData->doreduction > 0) ? true : false; // if true L=(N+1)^2 channels are expected, otherwise C
+      
+      uint32_t rows = pAmbixConfigData->rows; // has to be L=(N+1)^2
+      uint32_t cols = pAmbixConfigData->cols; // has to be C (reduced number of channels)
+      
+      if ((rows > 0) && (cols > 0))
+      {
+        /* parse the matrix which got passed... */
+        m_adapter_matrix = ptr_ambix_matrix_init(rows, cols, NULL);
+        
+        // mtx data offset in passed configchunk
+        int param_offset = sizeof(AMBIXSINK_CONFIG);
+        // this is the data pointer
+        float* mtx_data_passed = (float32_t *)(((char*)cfgdata)+param_offset);
+        
+        ambix_err_t err = ptr_ambix_matrix_fill_data(m_adapter_matrix, mtx_data_passed);
+        
+        if (err != AMBIX_ERR_SUCCESS)
+          printf("ERROR: Could not read matrix values....\n");
+        
+        printf("This matrix was passed:\n");
+        post_matrix(m_adapter_matrix);
+        
+        
+        m_inverse_adapter_matrix = ptr_ambix_matrix_init(cols, rows, NULL);
+        
+        /* invert the adapter matrix */
+        m_inverse_adapter_matrix = ptr_ambix_matrix_pinv(m_adapter_matrix, m_inverse_adapter_matrix);
+        
+        printf("And this is the inverse of the passed matrix:\n");
+        post_matrix(m_inverse_adapter_matrix);
+      
+      }
+      
+    } // end retrieve settings
+    
+    // number of ambisonic channels
+    uint32_t L = (uint32_t)(m_order+1)*(m_order+1);
+    
+    // sanity check... if num extra channels > 0 it has to be extended format!
+    if (m_xtrachannels > 0)
+      m_fileformat = AMBIX_EXTENDED;
+    
+    // if no extrachannels and no adapter matrix we have basic format!
+    if ((m_xtrachannels == 0) && !m_adapter_matrix)
+      m_fileformat = AMBIX_BASIC;
+    
+    /* create identity adapter matrix in case of extended file format and no adapter provided */
+    if (!m_adapter_matrix && (m_fileformat == AMBIX_EXTENDED))
+    {
+      /* generate matrix of ones in case we have extended format with (N+1)^2 channels, but we miss an adapter matrix */
+      m_adapter_matrix = ptr_ambix_matrix_init(L, L, NULL);
+      m_adapter_matrix = ptr_ambix_matrix_fill(m_adapter_matrix, AMBIX_MATRIX_IDENTITY);
+      
+      m_doreduction = false;
     }
     
-    m_ambichannels = (uint32_t)(m_order+1)*(m_order+1); // (N+1)^2 for basic format
+    // set the number of ambisonic channels for reading/writing
+    if (m_fileformat == AMBIX_BASIC)
+    {
+      m_doreduction = false; // no need for reduction!
+      
+      m_ambi_in_channels = L; // (N+1)^2 for basic format
+      m_ambi_out_channels = L; // (N+1)^2 for basic format
+    }
+    else if ((m_fileformat == AMBIX_EXTENDED) && m_doreduction)
+    {
+      m_ambi_in_channels = L; // L=(N+1)^2 for basic format and extended doing reduction
+      m_ambi_out_channels = m_adapter_matrix->cols; // C = cols of adapter matrix!
+    } else {
+      // we already got the reduced format to write...
+      m_ambi_in_channels = m_adapter_matrix->cols;
+      m_ambi_out_channels = m_adapter_matrix->cols;
+    }
+    
     m_xtrachannels = (uint32_t)m_xtrachannels;
     
-    m_dummychannels = m_nch - m_ambichannels - m_xtrachannels; // throw away additional channels!
+    // throw away additional channels!
+    m_dummychannels = m_in_ch - m_ambi_in_channels - m_xtrachannels;
     
     // sanity check number of input channels
-    if (m_ambichannels + m_xtrachannels > m_nch)
+    
+    if (m_ambi_in_channels + m_xtrachannels > m_in_ch)
     {
-      printf("ERROR: not enough input channels! Got: %d, Need: %d\n", m_nch, m_ambichannels + m_xtrachannels);
+      printf("ERROR: not enough input channels! Got: %d, Need: %d\n", m_in_ch, m_ambi_in_channels + m_xtrachannels);
       return;
     }
     
-    /* generate matrix of ones in case we have extended format with (N+1)^2 channels */
-    m_ambix_matrix = ptr_ambix_matrix_init(m_ambichannels, m_ambichannels, NULL);
-    
-    m_ambix_matrix = ptr_ambix_matrix_fill(m_ambix_matrix, AMBIX_MATRIX_IDENTITY);
     
     
     /* post matrix */
-    // post_matrix(m_ambix_matrix);
+    // post_matrix(m_adapter_matrix);
     
-    printf("Inputchannels: %d, Ambichannels: %d, Extrachannels: %d, Dummychannels: %d\n", m_nch, m_ambichannels, m_xtrachannels, m_dummychannels);
+    printf("Inputchannels: %d, AmbiInchannels: %d, AmbiOutchannels: %d, Extrachannels: %d, Dummychannels: %d\n", m_in_ch, m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels);
     
-    if ((m_format == 0) && (m_xtrachannels == 0))
+    
+    if (m_fileformat == AMBIX_BASIC)
     {
       // basic format only works for (N+1)^2 channels, without extrachannels!
-      m_fileformat = AMBIX_BASIC;
       printf("Write BASIC format\n");
     } else {
-      m_fileformat = AMBIX_EXTENDED;
       printf("Write EXTENDED format\n");
     }
     
@@ -135,12 +249,13 @@ public:
     
     m_ainfo.fileformat=m_fileformat;
     
-    m_ainfo.ambichannels=m_ambichannels;//ambichannels;
-    m_ainfo.extrachannels=m_xtrachannels;// xtrachannels;
+    m_ainfo.ambichannels=m_ambi_out_channels;
+    m_ainfo.extrachannels=m_xtrachannels;
     
     m_ainfo.samplerate=m_srate;
     
-    printf("Sampleformat: %d\n", m_sampleformat);
+    
+    // printf("Sampleformat: %d\n", m_sampleformat);
     
     m_ainfo.sampleformat=(ambix_sampleformat_t)m_sampleformat;
     
@@ -158,28 +273,31 @@ public:
     if (m_fileformat == AMBIX_EXTENDED)
     {
       // set the adaptor matrix
-      ambix_err_t err = ptr_ambix_set_adaptormatrix(m_fh, m_ambix_matrix);
+      ambix_err_t err = ptr_ambix_set_adaptormatrix(m_fh, m_adapter_matrix);
       if(err!=AMBIX_ERR_SUCCESS)
-        fprintf(stderr, "setting adapator matrix [%dx%d] returned %d\n", m_ambix_matrix->rows, m_ambix_matrix->cols, err);
+        fprintf(stderr, "setting adapator matrix [%dx%d] returned %d\n", m_adapter_matrix->rows, m_adapter_matrix->cols, err);
         
       // free the adaptor matrix
-      ptr_ambix_matrix_destroy(m_ambix_matrix);
+      ptr_ambix_matrix_destroy(m_adapter_matrix);
+      // but the inverse adaptor matrix is still needed for writing the samples!
       
+      /*
       // crosscheck the matrix
       const ambix_matrix_t *tempmatrix = NULL;
       
       tempmatrix=ptr_ambix_get_adaptormatrix(m_fh);
       
       
-      /* post matrix */
+      //post matrix
       printf("This is the stored matrix: \n");
       post_matrix((ambix_matrix_t *)tempmatrix);
+      */
     }
     
     
     if (buildpeaks && m_isopen)
     {
-      m_peakbuild=PeakBuild_Create(NULL,fn,m_srate,m_nch);
+      m_peakbuild=PeakBuild_Create(NULL,fn,m_srate,m_in_ch);
     }
     
   }
@@ -201,6 +319,8 @@ public:
       printf("close the file...\n");
     }
     
+    if (m_inverse_adapter_matrix)
+      ptr_ambix_matrix_destroy(m_inverse_adapter_matrix);
     
     
     delete m_peakbuild;
@@ -210,7 +330,12 @@ public:
   }
   
   const char *GetFileName() { return m_fn.Get(); }
-  int GetNumChannels() { return m_nch; } // return number of channels
+  
+  int GetNumChannels()
+  {
+    return m_ambi_out_channels+m_xtrachannels;
+  } // return number of channels
+  
   double GetLength() { return m_lensamples / (double) m_srate; } // length in seconds, so far
   INT64 GetFileSize()
   {
@@ -230,9 +355,30 @@ public:
   
   void GetOutputInfoString(char *buf, int buflen)
   {
+    char ambix_format[20];
+    
+    switch (m_fileformat) {
+      case AMBIX_NONE:
+        sprintf(ambix_format, "error");
+        break;
+        
+      case AMBIX_BASIC:
+        sprintf(ambix_format, "basix");
+        break;
+        
+      case AMBIX_EXTENDED:
+        sprintf(ambix_format, "extended");
+        break;
+        
+    }
+    
     char tmp[512];
-    sprintf(tmp,"ambiX %dHz %dch",m_srate,
-            m_nch);
+    sprintf(tmp,"Write ambiX %s file: order %d, ambi channels: %d, xtrachannels: %d",
+            ambix_format,
+            m_order,
+            m_ambi_out_channels,
+            m_xtrachannels);
+    
     strncpy(buf,tmp,buflen);
   }
   
@@ -241,17 +387,18 @@ public:
   {
     // printf("i am writing %d samples, my samples are %d, spacing %d, offset %d \n", len, sizeof(ReaSample), spacing, offset);
     if (m_peakbuild)
-      m_peakbuild->ProcessSamples(samples,len,nch,offset,spacing);
+      m_peakbuild->ProcessSamples(samples,len,m_in_ch,offset,spacing);
     
-    float64_t* ambibuf = NULL;
+    
+    /* temp buffer allocation */
+    float64_t* ambirawbuf = NULL;
     float64_t* xtrabuf = NULL;
     
-    ambibuf = (float64_t*)calloc(len*m_ambichannels, sizeof(float64_t));
+    ambirawbuf = (float64_t*)calloc(len*m_ambi_in_channels, sizeof(float64_t));
     xtrabuf = (float64_t*)calloc(len*m_xtrachannels, sizeof(float64_t));
     
-    // printf("m_ambichannels %d, m_xtrachannels %d\n", m_ambichannels, m_xtrachannels);
     
-    float64_t* ambibuf_temp = ambibuf;
+    float64_t* ambirawbuf_temp = ambirawbuf;
     float64_t* xtrabuf_temp = xtrabuf;
     
     int len_temp = len;
@@ -261,9 +408,9 @@ public:
     
     while (len_temp-- > 0) {
       
-      for (int i=0; i < m_ambichannels; i++)
+      for (int i=0; i < m_ambi_in_channels; i++)
       {
-        *ambibuf_temp++ = (float64_t) (*smpl_temp++);
+        *ambirawbuf_temp++ = (float64_t) (*smpl_temp++);
       }
       
       for (int i=0; i < m_xtrachannels; i++)
@@ -274,18 +421,45 @@ public:
       // this is just for incrementing the pointer... throw away those channels
       for (int i=0; i < m_dummychannels; i++)
       {
-        (float64_t) (*smpl_temp++);
+        smpl_temp++;
       }
       
     }
     
-    int sysrtn = ptr_ambix_writef_float64(m_fh,
-                                          ambibuf,
-                                          xtrabuf,
-                                          len);
-    // printf("written return: %d", sysrtn);
-    free(ambibuf);free(xtrabuf);
+    if (!m_doreduction)
+    {
+      /* in case we don't have to do a reduction we are done now and can write the buffers to the file */
+      
+      int sysrtn = ptr_ambix_writef_float64(m_fh,
+                                            ambirawbuf,
+                                            xtrabuf,
+                                            len);
+      
+    }
+    else
+    {
+      /* write with reduction of ambi channels */
+      
+      float64_t* ambibuf = NULL;
+      ambibuf = (float64_t*)calloc(len*m_ambi_out_channels, sizeof(float64_t));
+      
+      /* reduce the data with the inverse adapter matrix */
+      ptr_ambix_matrix_multiply_float64(ambibuf, m_inverse_adapter_matrix, ambirawbuf, len);
+      
+      
+      int sysrtn = ptr_ambix_writef_float64(m_fh,
+                                            ambibuf,
+                                            xtrabuf,
+                                            len);
+      
+      // printf("written return: %d", sysrtn);
+      free(ambibuf);
+    }
     
+    /* dealloc temp buffers */
+    free(ambirawbuf);free(xtrabuf);
+    
+    // done writing
   }
   
   int Extended(int call, void *parm1, void *parm2, void *parm3)
@@ -302,17 +476,18 @@ private:
   ambix_info_t m_ainfo;
   ambix_fileformat_t m_fileformat;
   
-  ambix_matrix_t* m_ambix_matrix;
+  ambix_matrix_t* m_adapter_matrix; // this matrix gets stored in the file!
+  ambix_matrix_t* m_inverse_adapter_matrix; // this matrix is used to reduce the full set to the reduced set (inverse of the adapter matrix)
   
   
-  int m_format;
   int m_order;
   int m_sampleformat;
+        
+  uint32_t m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels;
   
-  uint32_t m_ambichannels, m_xtrachannels, m_dummychannels;
+  bool m_doreduction;
   
-  
-  int m_nch,m_srate;
+  int m_in_ch, m_srate;
   INT64 m_filesize;
   INT64 m_lensamples;
   WDL_String m_fn;
@@ -334,74 +509,6 @@ static const char *GetExtension(const void *cfg, int cfg_l)
 
 // config stuff
 
-static int LoadDefaultConfig(void **data, const char *desc)
-{
-  // printf("LoadDefaultConfig\n");
-  
-  static WDL_HeapBuf m_hb;
-  const char *fn=get_ini_file();
-  int l=GetPrivateProfileInt(desc,"default_size",0,fn);
-  if (l<1) return 0;
-  
-  if (GetPrivateProfileStruct(desc,"default",m_hb.Resize(l),l,fn))
-  {
-    *data = m_hb.Get();
-    return l;
-  }
-  return 0;
-}
-
-int SinkGetConfigSize() {
-  // printf("SinkGetConfigSize\n");
-  
-  return 8;
-}
-
-
-void SinkInitDialog(HWND hwndDlg, void *cfgdata, int cfgdata_l)
-{
-  
-  // printf("SinkInitDialog\n");
-  
-  
-  if (cfgdata_l < 8 || *((int *)cfgdata) != SINK_FOURCC)
-    cfgdata_l=LoadDefaultConfig(&cfgdata,"ambix sink defaults");
-  
-  if (cfgdata_l>=8 && ((int*)cfgdata)[0] == SINK_FOURCC)
-  {
-    
-    
-  }
-  
-  // todo: show conifguration
-  
-}
-
-
-
-void SinkSaveState(HWND hwndDlg, void *_data)
-{
-  printf("SinkSaveState\n");
-  
-}
-
-
-
-void SaveDefaultConfig(HWND hwndDlg)
-{
-  printf("SaveDefaultConfig\n");
-  
-  char data[1024];
-  SinkSaveState(hwndDlg,data);
-  int l=SinkGetConfigSize();
-  char *desc="ambix sink defaults";
-  const char *fn=get_ini_file();
-  char buf[64];
-  sprintf(buf,"%d",l);
-  WritePrivateProfileString(desc,"default_size",buf,fn);
-  WritePrivateProfileStruct(desc,"default",data,l,fn);
-  
-}
 
 /* GUI ELEMENTS HANDLING STUFF */
 
@@ -464,13 +571,147 @@ static int getCurrentItemData(HWND hwndDlg, int nIDDlgItem)
   return itemdata;
 }
 
+
+void getAdapterMatrix(HWND hwndDlg, uint32_t& mtx_rows, uint32_t &mtx_cols, const float* &mtx_data)
+{
+  uint32_t reduction_sel = getCurrentItemData(hwndDlg, IDC_ADAPTORMATRIX);
+  
+  uint32_t order = getCurrentItemData(hwndDlg, IDC_AMBI_ORDER);
+  
+  // the adapter matrix is LxC
+  // L... (N+1)^2
+  // C... reduced number of channels
+  
+  /* Get the circular reduction matrix */
+  if (reduction_sel == 1)
+  {
+    mtx_rows = (order+1)*(order+1);
+    mtx_cols = 2*order+1; // 2d...
+    
+    mtx_data = (const float*)adapter_circular[order-1];
+  }
+  /* Get the hemi reduction matrix */
+  else if (reduction_sel == 2)
+  {
+    mtx_rows = mtx_adapter_hemi[order-1].rows;
+    mtx_cols = mtx_adapter_hemi[order-1].cols;
+    
+    mtx_data = (const float*)adapter_hemi[order-1];
+    
+    // printf("set matrix to rows: %u cols: %u\n", mtx_rows, mtx_cols);
+    
+  }
+  
+}
+
 static void calcNumChannels(HWND hwndDlg)
 {
   int order = getCurrentItemData(hwndDlg, IDC_AMBI_ORDER);
   int xtrachannels = getCurrentItemData(hwndDlg, IDC_EXTRACHANNELS);
   
+  /*
+  uint32_t mtx_rows = 0;
+  uint32_t mtx_cols = 0; // this is the number of needed input channels...
+  const float* data;
+  getAdapterMatrix(hwndDlg, mtx_rows, mtx_cols, data);
+  */
+  
+  
   setNumChannelsLabel(hwndDlg, (order+1)*(order+1)+xtrachannels);
 }
+
+int SinkGetConfigSize(HWND hwndDlg) {
+  
+  uint32_t mtx_rows = 0;
+  uint32_t mtx_cols = 0;
+  const float* data;
+  
+  getAdapterMatrix(hwndDlg, mtx_rows, mtx_cols, data);
+  
+  // printf("retrieved config size: %lu, rows: %d cols: %d\n", sizeof(AMBIXSINK_CONFIG) + mtx_rows*mtx_cols*sizeof(float32_t), mtx_rows, mtx_cols);
+  
+  return sizeof(AMBIXSINK_CONFIG) + mtx_rows*mtx_cols*sizeof(float32_t);
+}
+
+
+/* use this to store the settings for the sink */
+void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
+{
+  printf("SinkSaveState\n");
+  
+  /* first the size is asked to reserve the memory!! */
+  if (pSize) *((int *)pSize) = SinkGetConfigSize(hwndDlg);
+  
+  
+  /* second callback will fetch the actual data */
+  if (pConfigData)
+  {
+    AMBIXSINK_CONFIG *pAmbixConfigData = (AMBIXSINK_CONFIG *) pConfigData;
+    memset(pAmbixConfigData, 0, sizeof(AMBIXSINK_CONFIG));
+    
+    // identifier
+    pAmbixConfigData->fourCC = SINK_FOURCC;
+    
+    
+    pAmbixConfigData->format = (ambix_fileformat_t)getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
+    pAmbixConfigData->order = getCurrentItemData(hwndDlg, IDC_AMBI_ORDER);
+    pAmbixConfigData->sampleformat = getCurrentItemData(hwndDlg, IDC_SAMPLEFORMAT);
+    pAmbixConfigData->numextrachannels = getCurrentItemData(hwndDlg, IDC_EXTRACHANNELS);
+    
+    pAmbixConfigData->reduction_sel = getCurrentItemData(hwndDlg, IDC_ADAPTORMATRIX);
+    
+    pAmbixConfigData->doreduction = 1; // set this static for now, might be altered afterwards
+    
+    /* AdaptorMatrix */
+    
+    uint32_t mtx_rows = 0;
+    uint32_t mtx_cols = 0;
+    
+    const float* mtx_data_src = NULL;
+    
+    getAdapterMatrix(hwndDlg, mtx_rows, mtx_cols, mtx_data_src);
+    
+    /* store the matrix data in our settings */
+    
+    pAmbixConfigData->rows = mtx_rows;
+    pAmbixConfigData->cols = mtx_cols;
+    
+    int param_offset = sizeof(AMBIXSINK_CONFIG);
+    float* mtx_data_dst = (float32_t *)(((char*)pConfigData)+param_offset); // write to this destination
+    
+    memcpy(mtx_data_dst, mtx_data_src, mtx_rows*mtx_cols*sizeof(float32_t));
+    
+    /*
+    for (int i=0; i < mtx_rows*mtx_cols; i++)
+    {
+      printf("value: %f\n", mtx_data_src[0]);
+      
+      (*mtx_data_dst++) = (*mtx_data_src++);
+    }
+    */
+    
+    /*
+    float* mtx_data = (float32_t *)(((char*)pConfigData)+param_offset);
+    
+    
+    for (int i=0; i < rows; i++)
+    {
+      for (int j=0; j < cols; j++)
+      {
+        float val = 0.f;
+        if (i == j) {
+          val = (float32_t)i+1;
+        }
+        mtx_data[i*cols + j] = val;
+      }
+    }
+    */
+    
+  }
+  
+}
+
+
 
 WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -481,26 +722,10 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_INITDIALOG:
     {
       
+      /* SETUP THE GUI */
       
-      /* Get the saved parameters */
-      void *cfgdata=((void **)lParam)[0];
-      int configLen = (int) (INT_PTR) ((void **) lParam)[1];
-      
-      
-      if (configLen < 32 || *((int *)cfgdata) != SINK_FOURCC)
-        configLen=LoadDefaultConfig(&cfgdata,"ambix sink defaults");
-      
-      // parameters have been sent by reaper -> parse them and set gui accordingly
-      if (configLen >= 32 && *((int *)cfgdata) == SINK_FOURCC)
-      {
-        
-      }
-      
-      
-      /* setup the gui */
-      
-      SetAmbixFormatStr(hwndDlg, "BASIC", 0);
-      SetAmbixFormatStr(hwndDlg, "EXTENDED", 1);
+      SetAmbixFormatStr(hwndDlg, "BASIC", 1);
+      SetAmbixFormatStr(hwndDlg, "EXTENDED", 2);
       
       // order 7 is maximum for 64 channel limit
       for (int i=1; i <= 7; i++)
@@ -519,9 +744,10 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       SetSampleformatStr(hwndDlg, "64 bit float", 5);
       
       // Adaptor Matrix
-      SetAdaptormatrixStr(hwndDlg, "Reduce to 2D (Circular)", 0);
-      SetAdaptormatrixStr(hwndDlg, "Reduce to upper Hemisphere", 1);
-      SetAdaptormatrixStr(hwndDlg, "...Load from .txt file", 2);
+      SetAdaptormatrixStr(hwndDlg, "Full 3D (No Reduction)", 0);
+      SetAdaptormatrixStr(hwndDlg, "Reduce to 2D (Circular)", 1);
+      SetAdaptormatrixStr(hwndDlg, "Reduce to Upper Hemisphere", 2);
+      // SetAdaptormatrixStr(hwndDlg, "...Load from .txt file", 3); // loading from txt file is not implemented yet
       
       // maximum 64 extrachannels
       for (int i=0; i <= 64; i++)
@@ -532,12 +758,100 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SetExtrachannelsStr(hwndDlg, buf, i);
       }
       
+      /* END SETUP GUI */
+      
+      ///////////////////////////////
+      /* Get the saved parameters */
+      
+      void *cfgdata=((void **)lParam)[0];
+      int configLen = (int) (INT_PTR) ((void **) lParam)[1];
+      
+      if (configLen < sizeof(AMBIXSINK_CONFIG) || *((int *)cfgdata) != SINK_FOURCC)
+      {
+        SendDlgItemMessage(hwndDlg, IDC_AMBIX_FORMAT, CB_SETCURSEL, 0, 0);
+        SendDlgItemMessage(hwndDlg, IDC_AMBI_ORDER, CB_SETCURSEL, 0, 0);
+        SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETCURSEL, 1, 0);
+        SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, 0, 0);
+        SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, 0, 0);
+      }
+      
+      // parameters have been sent by reaper -> parse them and set gui accordingly
+      if (configLen >= sizeof(AMBIXSINK_CONFIG) && *((int *)cfgdata) == SINK_FOURCC)
+      {
+        AMBIXSINK_CONFIG *pAmbixConfigData = (AMBIXSINK_CONFIG *) cfgdata;
+        
+        
+        SendDlgItemMessage(hwndDlg, IDC_AMBIX_FORMAT, CB_SETCURSEL, pAmbixConfigData->format-1, 0);
+        SendDlgItemMessage(hwndDlg, IDC_AMBI_ORDER, CB_SETCURSEL, pAmbixConfigData->order-1, 0);
+        SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETCURSEL, pAmbixConfigData->sampleformat-1, 0);
+        SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, pAmbixConfigData->numextrachannels, 0);
+        SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, pAmbixConfigData->reduction_sel, 0);
+        
+        /* recalc the needed channels*/
+        calcNumChannels(hwndDlg);
+      }
+      
+      
+
+      
       return 0;
     }
       
       // this gets called in case something changed
     case WM_COMMAND:
     {
+      
+      
+      /* ONLY FOR TESTING */
+      /* try getting hemi adapter and invert it */
+      /*
+      int order = 1;
+      
+      int mtx_rows = mtx_adapter_hemi[order-1].rows;
+      int mtx_cols = mtx_adapter_hemi[order-1].cols;
+      
+      ambix_matrix_t* mtx = ptr_ambix_matrix_init(mtx_rows, mtx_cols, NULL);
+      ambix_matrix_t* inverse = ptr_ambix_matrix_init(mtx_cols, mtx_rows, NULL);
+      
+      ptr_ambix_matrix_fill_data(mtx, adapter_hemi[order-1]);
+      
+      printf("original:\n");
+      post_matrix(mtx);
+      
+      inverse = ptr_ambix_matrix_pinv(mtx, inverse);
+      if (inverse)
+      {
+        printf("pseudo inverse:\n");
+        post_matrix(inverse);
+      }
+      */
+//      int mtx_rows = 4;
+//      int mtx_cols = 3;
+//      ambix_matrix_t* mtx = ptr_ambix_matrix_init(mtx_rows, mtx_cols, NULL);
+//      ambix_matrix_t* inverse = ptr_ambix_matrix_init(mtx_cols, mtx_rows, NULL);
+//      
+//      // ptr_ambix_matrix_fill(mtx, AMBIX_MATRIX_FUMA);
+//      // ptr_ambix_matrix_fill(mtx, AMBIX_MATRIX_IDENTITY);
+//      
+//      
+//      
+//      // float32_t data[9] = {1.f, 2.f, 4.f, 2.f, 3.f, 4.f, 3.f, 4.f, 5.f};
+//      float32_t data[12] = {0.750702260800974, 0.0, 0.0, 0.0, 1.0, 0.0, 0.660640685719784, 0.0, 0.0, 0.0, 0.0, 1.0};
+//      ptr_ambix_matrix_fill_data(mtx, data);
+//      
+//      printf("original:\n");
+//      post_matrix(mtx);
+//      
+//      inverse = ptr_ambix_matrix_pinv(mtx, inverse);
+//      if (inverse)
+//      {
+//        printf("pseudo inverse:\n");
+//        post_matrix(inverse);
+//      }
+      
+      
+      
+      /* ONLY FOR TESTING */
       
       /* Ambi Order changed */
       if ((LOWORD(wParam) == IDC_AMBI_ORDER || LOWORD(wParam) == IDC_EXTRACHANNELS) && HIWORD(wParam) == CBN_SELCHANGE)
@@ -566,50 +880,11 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
       
       
-      // this gets called to retrieve the settings!
+      // this gets called to save the settings!!
     case WM_USER+1024:
     {
-      if (wParam) *((int *)wParam)=32;
-      if (lParam)
-      {
-        /*
-         Settings List:
-         0: Format (INT) -> 0: Basic, 1: Extended
-         1: Order (INT)
-         2: SampleFormat (INT): 0: 16bit PCM, 1: 24 bit PCM, 2: 32 bit PCM, 3: 32 bit float, 4: 64 bit float
-         3: NumExtraChannels (INT)
-         4: AdaptorMatrix Filename (char*)
-        */
-        
-        int format = getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
-        int order = getCurrentItemData(hwndDlg, IDC_AMBI_ORDER);
-        int sampleformat = getCurrentItemData(hwndDlg, IDC_SAMPLEFORMAT);
-        int numextrachannels = getCurrentItemData(hwndDlg, IDC_EXTRACHANNELS);
-        
-        
-        // identifier
-        ((int *)lParam)[0] = SINK_FOURCC;
-        
-        // parameters
-        ((int *)(((unsigned char *)lParam)+4))[0]=REAPER_MAKELEINT(format);
-        ((int *)(((unsigned char *)lParam)+4))[1]=REAPER_MAKELEINT(order);
-        ((int *)(((unsigned char *)lParam)+4))[2]=REAPER_MAKELEINT(sampleformat);
-        ((int *)(((unsigned char *)lParam)+4))[3]=REAPER_MAKELEINT(numextrachannels);
-        
-        /*
-         // get the format selection
-         int id = SendDlgItemMessage(hwndDlg, IDC_BYTEORDER, CB_GETCURSEL, 0, 0);
-         int format = SendDlgItemMessage(hwndDlg, IDC_BYTEORDER, CB_GETITEMDATA, id, 0);
-         
-         // get the vbr quality
-         int pos = SendDlgItemMessage(hwndDlg, IDC_VBR_SLIDER, TBM_GETPOS, 0, 0);
-         
-         
-         ((int *)lParam)[0] = SINK_FOURCC;
-         ((int *)(((unsigned char *)lParam)+4))[0]=REAPER_MAKELEINT(format);
-         ((float *)(((unsigned char *)lParam)+4))[1]=(float)pos/100.f;
-         */
-      }
+      
+      SinkSaveState(hwndDlg, (void *)wParam, (void *)lParam);
       
       return 0;
     }

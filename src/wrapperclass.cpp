@@ -118,6 +118,9 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
   m_srate=0;
   memset(&m_sfinfo, 0, sizeof(m_sfinfo));
   
+  /* we could let the library do the conversion back to AMBIX_BASIC format internally */
+  /* however, i think it's nice to give the user feedback about the file details (stored channels,...) */
+  // m_sfinfo.fileformat = AMBIX_BASIC;
   
   m_fh=ptr_ambix_open(m_filename,AMBIX_READ,&m_sfinfo);
   if (!m_fh)
@@ -150,8 +153,8 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
       
       m_ambi_out_channels = m_matrix->rows; // the number of rows will be our ambisonics channels
       
-      printf("Adapter Matrix:\n");
-      post_matrix((ambix_matrix_t*)m_matrix);
+      // printf("Adapter Matrix:\n");
+      // post_matrix((ambix_matrix_t*)m_matrix);
     } else {
       // printf("Error: No Adapter Matrix!\n");
     }
@@ -206,7 +209,7 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
     char temp[4096],lengthbuf[128];
     format_timestr((double) m_length / (double)m_srate,lengthbuf,sizeof(lengthbuf));
     
-    char ambix_format[15];
+    char ambix_format[20];
     
     switch (m_sfinfo.fileformat) {
       case AMBIX_NONE:
@@ -223,7 +226,7 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
         
     }
     
-    char matrix[10];
+    char matrix[20];
     if (m_matrix)
       sprintf(matrix, "yes [%dx%d]", m_matrix->cols, m_matrix->rows);
     else
