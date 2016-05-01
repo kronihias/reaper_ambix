@@ -461,6 +461,20 @@ public:
   
   int Extended(int call, void *parm1, void *parm2, void *parm3)
   {
+    printf("sink extended called: 0x%.8x\n", call);
+    
+    /* use this to retrieve cues (markers) !*/
+    
+    if (call == PCM_SINK_EXT_ADDCUE)
+    {
+      // parm1=(REAPER_cue*)cue
+      REAPER_cue* cue = (REAPER_cue*)parm1;
+      
+      printf("cue %d: start: %f end: %f isregion: %d name: %s\n", cue->m_id, cue->m_time, cue->m_endtime, cue->m_isregion, cue->m_name);
+      
+      return 1;
+    }
+    
     return 0;
   }
   
@@ -492,7 +506,7 @@ private:
   REAPER_PeakBuild_Interface *m_peakbuild;
 };
 
-static unsigned int GetFmt(char **desc)
+static unsigned int GetFmt(const char **desc)
 {
   if (desc) *desc="ambiX (Ambisonics eXchangeable)";
   return SINK_FOURCC;
@@ -502,6 +516,19 @@ static const char *GetExtension(const void *cfg, int cfg_l)
 {
   if (cfg_l >= 4 && *((int *)cfg) == SINK_FOURCC) return "ambix";
   return NULL;
+}
+
+/* extended sink */
+static int ExtendedSinkInfo(int call, void* parm1, void* parm2, void* parm3)
+{
+  printf("callback extended called: 0x%.8x\n", call);
+  if (call == PCM_SINK_EXT_ADDCUE)
+  {
+    /* we support cues... */
+    return 1;
+  }
+  
+  return 0;
 }
 
 // config stuff
@@ -947,10 +974,8 @@ static PCM_sink *CreateSink(const char *filename, void *cfg, int cfg_l, int nch,
   return 0;
 }
 
-
-
 pcmsink_register_t mySinkRegStruct={GetFmt,GetExtension,ShowConfig,CreateSink};
-
+//pcmsink_register_ext_t mySinkRegStruct={{GetFmt,GetExtension,ShowConfig,CreateSink}, ExtendedSinkInfo};
 
 // import the resources. Note: if you do not have these files, run "php ../WDL/swell/mac_resgen.php res.rc" from this directory
 #ifndef _WIN32 // MAC resources

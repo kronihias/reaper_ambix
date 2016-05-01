@@ -51,7 +51,7 @@ PCM_source *CreateFromFile(const char *filename, int priority)
 }
 
 // this is used for UI only, not so muc
-const char *EnumFileExtensions(int i, char **descptr) // call increasing i until returns a string, if descptr's output is NULL, use last description
+const char *EnumFileExtensions(int i, const char **descptr) // call increasing i until returns a string, if descptr's output is NULL, use last description
 {
     if (i == 0)
     {
@@ -65,7 +65,9 @@ const char *EnumFileExtensions(int i, char **descptr) // call increasing i until
 
 pcmsrc_register_t myRegStruct={CreateFromType,CreateFromFile,EnumFileExtensions};
 
+
 extern pcmsink_register_t mySinkRegStruct; // from pcmsink_ambix.cpp
+// extern pcmsink_register_ext_t mySinkRegStruct; // from pcmsink_ambix.cpp
 
 const char *(*GetExePath)();
 
@@ -108,6 +110,18 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
         }
         rec->Register("pcmsrc",&myRegStruct);
         rec->Register("pcmsink",&mySinkRegStruct);
+        /*
+        if (!rec->Register("pcmsink_ext",&mySinkRegStruct))
+        {
+          printf("Failed to register extended Sink\n");
+          
+          if (rec->Register("pcmsink",&mySinkRegStruct))
+            printf("Registered normal Sink!\n");
+          
+        }
+        */
+      
+      
         return 1;
     }
     return 0;
