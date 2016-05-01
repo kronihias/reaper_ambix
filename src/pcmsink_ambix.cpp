@@ -24,9 +24,6 @@
 
 /*          */
 
-#if !defined(ARRAY_SIZE)
-  #define ARRAY_SIZE(x) (sizeof((x)) / sizeof((x)[0]))
-#endif
 
 // short for AMbixSInk
 #define SINK_FOURCC REAPER_FOURCC('a','m','s','i')
@@ -363,7 +360,7 @@ public:
         break;
         
       case AMBIX_BASIC:
-        sprintf(ambix_format, "basix");
+        sprintf(ambix_format, "basic");
         break;
         
       case AMBIX_EXTENDED:
@@ -620,6 +617,35 @@ static void calcNumChannels(HWND hwndDlg)
   setNumChannelsLabel(hwndDlg, (order+1)*(order+1)+xtrachannels);
 }
 
+/* depending on the ambix format enable/disable some control elements */
+static void enableDisableElements(HWND hwndDlg)
+{
+  int format = (ambix_fileformat_t)getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
+  
+  if (format == AMBIX_BASIC)
+  {
+    /* Reset and disable Adaptor Matrix and Extra Channels */
+    
+    SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, 0, 0);
+    SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, 0, 0);
+    
+    EnableWindow( GetDlgItem( hwndDlg, IDC_EXTRACHANNELS ), false );
+    EnableWindow( GetDlgItem( hwndDlg, IDC_ADAPTORMATRIX ), false );
+    EnableWindow( GetDlgItem( hwndDlg, IDC_REVIEWMATRIX ), false );
+    
+    /* recalc the needed channels */
+    calcNumChannels(hwndDlg);
+  }
+  else
+  {
+    /* Enable Adapter Matrix and Extra Channels */
+    
+    EnableWindow( GetDlgItem( hwndDlg, IDC_EXTRACHANNELS ), true );
+    EnableWindow( GetDlgItem( hwndDlg, IDC_ADAPTORMATRIX ), true );
+    EnableWindow( GetDlgItem( hwndDlg, IDC_REVIEWMATRIX ), true );
+  }
+}
+
 int SinkGetConfigSize(HWND hwndDlg) {
   
   uint32_t mtx_rows = 0;
@@ -787,8 +813,12 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, pAmbixConfigData->numextrachannels, 0);
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, pAmbixConfigData->reduction_sel, 0);
         
+        
+        enableDisableElements(hwndDlg);
+        
         /* recalc the needed channels*/
         calcNumChannels(hwndDlg);
+        
       }
       
       
@@ -851,7 +881,12 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       
       
       
-      /* ONLY FOR TESTING */
+      /* Ambix Format changed */
+      if ((LOWORD(wParam) == IDC_AMBIX_FORMAT) && (HIWORD(wParam) == CBN_SELCHANGE))
+      {
+        enableDisableElements(hwndDlg);
+      }
+      
       
       /* Ambi Order changed */
       if ((LOWORD(wParam) == IDC_AMBI_ORDER || LOWORD(wParam) == IDC_EXTRACHANNELS) && HIWORD(wParam) == CBN_SELCHANGE)
@@ -859,23 +894,6 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         calcNumChannels(hwndDlg);
       }
       
-      /*
-       if (LOWORD(wParam) == IDC_FORMAT && HIWORD(wParam) == CBN_SELCHANGE)
-       {
-       int id = SendDlgItemMessage(hwndDlg, IDC_FORMAT, CB_GETCURSEL, 0, 0);
-       int sel_format = SendDlgItemMessage(hwndDlg, IDC_FORMAT, CB_GETITEMDATA, id, 0);
-       
-       updateSubFormats(hwndDlg, -1);
-       
-       }
-       else if (LOWORD(wParam) == IDC_ENCODING && HIWORD(wParam) == CBN_SELCHANGE)
-       {
-       int id = SendDlgItemMessage(hwndDlg, IDC_ENCODING, CB_GETCURSEL, 0, 0);
-       int sel_format = SendDlgItemMessage(hwndDlg, IDC_ENCODING, CB_GETITEMDATA, id, 0);
-       
-       updateByteOrder(hwndDlg, -1);
-       }
-       */
       break;
     }
       
