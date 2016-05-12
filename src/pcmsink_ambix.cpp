@@ -119,7 +119,6 @@ public:
     m_fn.Set(fn);
     
     m_adapter_matrix = NULL; // this one gets passed
-    m_inverse_adapter_matrix = NULL;
     
     
     // retrieve settings
@@ -128,7 +127,8 @@ public:
     {
       AMBIXSINK_CONFIG *pAmbixConfigData = (AMBIXSINK_CONFIG *) cfgdata;
       
-      m_fileformat = pAmbixConfigData->format;
+      m_wanted_fileformat = pAmbixConfigData->format; // BASIC MEANS NO REDUCTION, EXTENDED MIGHT MEAN WITH OR WITHOUT REDUCTION
+      
       m_order = REAPER_MAKELEINT(pAmbixConfigData->order);
       m_sampleformat = REAPER_MAKELEINT(pAmbixConfigData->sampleformat);
       
@@ -159,15 +159,6 @@ public:
         
         printf("This matrix was passed:\n");
         post_matrix(m_adapter_matrix);
-        
-        
-        m_inverse_adapter_matrix = ptr_ambix_matrix_init(cols, rows, NULL);
-        
-        /* invert the adapter matrix */
-        m_inverse_adapter_matrix = ptr_ambix_matrix_pinv(m_adapter_matrix, m_inverse_adapter_matrix);
-        
-        printf("And this is the inverse of the passed matrix:\n");
-        post_matrix(m_inverse_adapter_matrix);
       
       }
       
@@ -176,40 +167,50 @@ public:
     // number of ambisonic channels
     uint32_t L = (uint32_t)(m_order+1)*(m_order+1);
     
-    // sanity check... if num extra channels > 0 it has to be extended format!
-    if (m_xtrachannels > 0)
-      m_fileformat = AMBIX_EXTENDED;
+    // AMBIX_EXTENDED ... means the sink is already getting a reduced set
+    // AMBIX_BASIC ... either a full set is stored or it is reduced if set_adapter_matrix is called
     
-    // if no extrachannels and no adapter matrix we have basic format!
-    if ((m_xtrachannels == 0) && !m_adapter_matrix)
+    
+    
+    // if no reduction we write EXTENDED..
+    
+    if (m_doreduction && (m_wanted_fileformat == AMBIX_EXTENDED))
+    {
+      m_fileformat = AMBIX_BASIC; // the library does want ambix_basic in order to do the reduction (but it will write extended....!)
+    }
+    else if (m_wanted_fileformat == AMBIX_BASIC)
+    {
       m_fileformat = AMBIX_BASIC;
+    }
+    else if (!m_doreduction && (m_wanted_fileformat != AMBIX_BASIC))
+    {
+      m_fileformat = AMBIX_EXTENDED;
+    }
     
     /* create identity adapter matrix in case of extended file format and no adapter provided */
-    if (!m_adapter_matrix && (m_fileformat == AMBIX_EXTENDED))
+    if (!m_adapter_matrix && (m_wanted_fileformat == AMBIX_EXTENDED))
     {
+      printf("Init Matrix with L=%d...\n", L);
+      
       /* generate matrix of ones in case we have extended format with (N+1)^2 channels, but we miss an adapter matrix */
       m_adapter_matrix = ptr_ambix_matrix_init(L, L, NULL);
       m_adapter_matrix = ptr_ambix_matrix_fill(m_adapter_matrix, AMBIX_MATRIX_IDENTITY);
-      
-      m_doreduction = false;
     }
     
     // set the number of ambisonic channels for reading/writing
-    if (m_fileformat == AMBIX_BASIC)
+    if (m_wanted_fileformat == AMBIX_BASIC)
     {
-      m_doreduction = false; // no need for reduction!
-      
       m_ambi_in_channels = L; // (N+1)^2 for basic format
-      m_ambi_out_channels = L; // (N+1)^2 for basic format
+      m_ambi_out_channels = L; // only for display...
     }
-    else if ((m_fileformat == AMBIX_EXTENDED) && m_doreduction)
+    else if ((m_wanted_fileformat == AMBIX_EXTENDED) && m_doreduction)
     {
       m_ambi_in_channels = L; // L=(N+1)^2 for basic format and extended doing reduction
-      m_ambi_out_channels = m_adapter_matrix->cols; // C = cols of adapter matrix!
+      m_ambi_out_channels = m_adapter_matrix->cols; // only for display...
     } else {
       // we already got the reduced format to write...
       m_ambi_in_channels = m_adapter_matrix->cols;
-      m_ambi_out_channels = m_adapter_matrix->cols;
+      m_ambi_out_channels = m_adapter_matrix->cols; // only for display...
     }
     
     m_xtrachannels = (uint32_t)m_xtrachannels;
@@ -230,7 +231,7 @@ public:
     /* post matrix */
     // post_matrix(m_adapter_matrix);
     
-    printf("Inputchannels: %d, AmbiInchannels: %d, AmbiOutchannels: %d, Extrachannels: %d, Dummychannels: %d\n", m_in_ch, m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels);
+    printf("Inputchannels: %d, AmbiInChannels: %d, AmbiOutChannels: %d, Extrachannels: %d, Dummychannels: %d\n", m_in_ch, m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels);
     
     
     if (m_fileformat == AMBIX_BASIC)
@@ -246,7 +247,9 @@ public:
     
     m_ainfo.fileformat=m_fileformat;
     
-    m_ainfo.ambichannels=m_ambi_out_channels;
+    // this value must contain the reduced numer of channels (as stored on disk)
+    m_ainfo.ambichannels=m_ambi_out_channels; // m_ambi_in_channels;
+    
     m_ainfo.extrachannels=m_xtrachannels;
     
     m_ainfo.samplerate=m_srate;
@@ -267,8 +270,9 @@ public:
     else
       m_isopen = true;
     
-    if (m_fileformat == AMBIX_EXTENDED)
+    if (m_adapter_matrix) // is this save to always be called in case the matrix exists?
     {
+      printf("setting adapter matrix...\n");
       // set the adaptor matrix
       ambix_err_t err = ptr_ambix_set_adaptormatrix(m_fh, m_adapter_matrix);
       if(err!=AMBIX_ERR_SUCCESS)
@@ -276,7 +280,6 @@ public:
         
       // free the adaptor matrix
       ptr_ambix_matrix_destroy(m_adapter_matrix);
-      // but the inverse adaptor matrix is still needed for writing the samples!
       
       /*
       // crosscheck the matrix
@@ -316,9 +319,6 @@ public:
       printf("close the file...\n");
     }
     
-    if (m_inverse_adapter_matrix)
-      ptr_ambix_matrix_destroy(m_inverse_adapter_matrix);
-    
     
     delete m_peakbuild;
     m_peakbuild=0;
@@ -354,7 +354,7 @@ public:
   {
     char ambix_format[20];
     
-    switch (m_fileformat) {
+    switch (m_wanted_fileformat) {
       case AMBIX_NONE:
         sprintf(ambix_format, "error");
         break;
@@ -423,35 +423,12 @@ public:
       
     }
     
-    if (!m_doreduction)
-    {
-      /* in case we don't have to do a reduction we are done now and can write the buffers to the file */
+    /* in case we don't have to do a reduction we are done now and can write the buffers to the file */
       
-      int sysrtn = ptr_ambix_writef_float64(m_fh,
-                                            ambirawbuf,
-                                            xtrabuf,
-                                            len);
-      
-    }
-    else
-    {
-      /* write with reduction of ambi channels */
-      
-      float64_t* ambibuf = NULL;
-      ambibuf = (float64_t*)calloc(len*m_ambi_out_channels, sizeof(float64_t));
-      
-      /* reduce the data with the inverse adapter matrix */
-      ptr_ambix_matrix_multiply_float64(ambibuf, m_inverse_adapter_matrix, ambirawbuf, len);
-      
-      
-      int sysrtn = ptr_ambix_writef_float64(m_fh,
-                                            ambibuf,
-                                            xtrabuf,
-                                            len);
-      
-      // printf("written return: %d", sysrtn);
-      free(ambibuf);
-    }
+    int sysrtn = ptr_ambix_writef_float64(m_fh,
+                                          ambirawbuf,
+                                          xtrabuf,
+                                          len);
     
     /* dealloc temp buffers */
     free(ambirawbuf);free(xtrabuf);
@@ -485,11 +462,10 @@ private:
   
   ambix_t *m_fh;
   ambix_info_t m_ainfo;
+  ambix_fileformat_t m_wanted_fileformat;
   ambix_fileformat_t m_fileformat;
   
   ambix_matrix_t* m_adapter_matrix; // this matrix gets stored in the file!
-  ambix_matrix_t* m_inverse_adapter_matrix; // this matrix is used to reduce the full set to the reduced set (inverse of the adapter matrix)
-  
   
   int m_order;
   int m_sampleformat;
@@ -840,15 +816,12 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, pAmbixConfigData->numextrachannels, 0);
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, pAmbixConfigData->reduction_sel, 0);
         
-        
-        enableDisableElements(hwndDlg);
-        
-        /* recalc the needed channels*/
-        calcNumChannels(hwndDlg);
-        
       }
       
+      enableDisableElements(hwndDlg);
       
+      /* recalc the needed channels*/
+      calcNumChannels(hwndDlg);
 
       
       return 0;
