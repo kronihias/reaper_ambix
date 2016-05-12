@@ -30,7 +30,7 @@ building yourself
 
 authors
 -----------
-2014 Matthias Kronlachner
+2014-2016 Matthias Kronlachner
 
 Contact:
 m.kronlachner (ät) gmail.com
