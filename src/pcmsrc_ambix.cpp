@@ -19,6 +19,8 @@ REAPER_PeakBuild_Interface *(*PeakBuild_Create)(PCM_source *src, const char *fn,
 void (*GetPreferredDiskWriteMode)(int *mode, int nb[2], int *bs);
 const char *(*get_ini_file)();
 
+int (*enumProjectMarkers)(int index, bool *isRegion, double *position, double *regionEnd, char **name, int *markRegionIndexNumber);
+
 // output diagnostics messages using Reaper's currently available console
 #define REAPER_DEBUG_OUTPUT_TRACING
 
@@ -93,6 +95,7 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
         IMPAPI(get_ini_file);
         IMPAPI(GetPreferredDiskWriteMode);
         IMPAPI(PeakBuild_Create);
+        IMPAPI(enumProjectMarkers);
         if (impapierrcnt)
         {
             // ShowConsoleMsg("Errors importing Reaper API functions, aborting loading");

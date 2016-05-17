@@ -23,6 +23,12 @@ public:
     INT64 GetPosition() { return m_lastpos; }
     void SetPosition(INT64 pos);
     int ReadSamples(double *buf, int length);
+    int Extended(int call, void *parm1, void *parm2, void *parm3);
+    
+    void AddCueToList(int id, double time, double endtime, bool isregion, char* name, int flags);
+    
+    void freeCueList();
+    
 private:
     ambix_t *m_fh;
     ambix_info_t m_sfinfo;
@@ -40,6 +46,10 @@ private:
     int m_lastblocklen;
     INT64 m_length; // length in sample-frames
     bool m_isreadingblock;
+    
+    REAPER_cue *m_cuelist; // store the cue list
+    int m_numcues; // num of stored cues
+    
 };
 
 #endif // WRAPPERCLASS_H

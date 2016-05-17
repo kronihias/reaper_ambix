@@ -65,6 +65,7 @@ static void merge_samples(float64_t*buf1, uint32_t chan1, uint32_t want1,
   }
 }
 
+/* constructor */
 LSFW_SimpleMediaDecoder::LSFW_SimpleMediaDecoder()
 {
   // ShowConsoleMsg("constructing LSFW_SimpleMediaDecoder");
@@ -77,11 +78,27 @@ LSFW_SimpleMediaDecoder::LSFW_SimpleMediaDecoder()
   m_lastpos=0;
   m_lastblocklen=0;
   m_fh=0;
+  
+  /* CUES */
+  m_numcues = 0;
+  
+  /* the cues need to be in sequential order to be displayed correctly by reaper */
+  /*
+  AddCueToList(0, 1., 0., false, "my name", 0);
+  
+  AddCueToList(1, 2., 4., true, "test region", 0);
+  
+  AddCueToList(2, 10., 0., false, "2nd test marker", 0);
+  
+  AddCueToList(3, 12., 0., false, "3rd test marker", 0);
+   */
 }
 
 LSFW_SimpleMediaDecoder::~LSFW_SimpleMediaDecoder()
 {
   // ShowConsoleMsg("destroying LSFW_SimpleMediaDecoder");
+  freeCueList();
+  
   Close(true);
   free(m_filename);
 }
@@ -139,7 +156,7 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
     
     /* retrieve file information */
     m_ambi_in_channels=m_sfinfo.ambichannels;
-    m_ambi_out_channels=m_ambi_in_channels; // in case of basic format there is not adapter matrix..
+    m_ambi_out_channels=m_ambi_in_channels; // in case of basic format there is no adapter matrix..
     
     m_xtrachannels=m_sfinfo.extrachannels;
     
@@ -344,6 +361,70 @@ int LSFW_SimpleMediaDecoder::ReadSamples(double *buf, int length)
   }
 return 0;
 
+}
+
+
+void LSFW_SimpleMediaDecoder::AddCueToList(int id, double time, double endtime, bool isregion, char* name, int flags)
+{
+  if (m_numcues == 0)
+    m_cuelist = (REAPER_cue *) malloc((m_numcues + 1) * sizeof(REAPER_cue));
+  else
+    m_cuelist = (REAPER_cue *) realloc(m_cuelist, (m_numcues + 1) * sizeof(REAPER_cue));
+  
+  if (m_cuelist == NULL) return;
+  
+  memset(m_cuelist + m_numcues, 0, sizeof(REAPER_cue));
+  
+  m_cuelist[m_numcues].m_id = id;
+	m_cuelist[m_numcues].m_time = time;
+	m_cuelist[m_numcues].m_endtime = endtime;
+	m_cuelist[m_numcues].m_isregion = isregion;
+	m_cuelist[m_numcues].m_name = strdup(name);
+	m_cuelist[m_numcues].m_flags= flags;
+  
+  m_numcues += 1;
+  
+}
+
+void LSFW_SimpleMediaDecoder::freeCueList()
+{
+  for (int i=0; i<m_numcues; i++) {
+    free(m_cuelist[i].m_name);
+  }
+  free(m_cuelist);
+  m_cuelist = NULL;
+  m_numcues = 0;
+}
+
+int LSFW_SimpleMediaDecoder::Extended(int call, void *parm1, void *parm2, void *parm3)
+{
+  // printf("Extended Called with call: 0x%05x...\n", call);
+  
+  /* this will be called multiple times to retrieve cue information */
+  if (call == PCM_SOURCE_EXT_ENUMCUES_EX)
+  {
+    int cueIndex = (int) (INT_PTR) parm1;
+    
+    if (cueIndex < m_numcues)
+    {
+      
+      /* pass the cue to reaper */
+      
+      *(REAPER_cue*) parm2 = *(m_cuelist+cueIndex);
+      
+      // parm1=(int) index of cue (source must provide persistent backing store for cue->m_name),
+      // parm2=(REAPER_cue*) optional. Returns 0 when out of cues, otherwise returns how much to advance index (1 or 2 usually).
+      
+      return 1;
+    }
+    else
+      return 0; // no more cues
+    
+    
+  }
+
+  return 0;
+  
 }
 
 ISimpleMediaDecoder* LSFW_SimpleMediaDecoder::Duplicate()
