@@ -50,6 +50,9 @@ extern const char *(*get_ini_file)();
 extern HWND g_main_hwnd;
 
 
+extern int (*enumProjectMarkers)(int index, bool *isRegion, double *position, double *regionEnd, char **name, int *markRegionIndexNumber);
+
+
 extern HINSTANCE g_hInst;
 #define WIN32_FILE_IO
 
@@ -311,6 +314,19 @@ public:
   {
     if (IsOpen())
     {
+      
+      /* enumerate the project markers - enumProjectMarkers */
+      int markerIndex = 0;
+      bool markerIsRegion;
+      double markerPosition, markerRegionEnd;
+      char *markerName;
+      
+      while ((markerIndex = enumProjectMarkers(markerIndex, &markerIsRegion, &markerPosition, &markerRegionEnd, &markerName, NULL)) != 0)
+      {
+        printf("id: %d, isRegion: %d, markerPosition: %f, markerRegionEnd: %f, name: %s\n", markerIndex, markerIsRegion, markerPosition, markerRegionEnd, markerName);
+        
+      }
+      
       ambix_err_t err = ptr_ambix_close(m_fh);
       if(err!=AMBIX_ERR_SUCCESS)
         fprintf(stderr, "Error closing file %d\n", err);
@@ -441,7 +457,8 @@ public:
     printf("sink extended called: 0x%.8x\n", call);
     
     /* use this to retrieve cues (markers) !*/
-    
+    /* this does not work, probably not implemented */
+    /*
     if (call == PCM_SINK_EXT_ADDCUE)
     {
       // parm1=(REAPER_cue*)cue
@@ -451,7 +468,7 @@ public:
       
       return 1;
     }
-    
+    */
     return 0;
   }
   
