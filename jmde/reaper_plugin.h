@@ -1,7 +1,7 @@
 /***************************************
 *** REAPER Plug-in API
 **
-** Copyright (C) 2006-2014, Cockos Incorporated
+** Copyright (C) 2006-2015, Cockos Incorporated
 **
 **    This software is provided 'as-is', without any express or implied
 **    warranty.  In no event will the authors be held liable for any damages
@@ -221,7 +221,7 @@ typedef struct
   unsigned char msg[3]; // if varmsg is valid, msg[0] is the text event type or 0xF0 for sysex
   char* varmsg;
   int varmsglen;
-  int setflag; // &1:selected, &2:muted, &4:ppqpos, &8:endppqpos, &16:msg1 high bits, &32:msg1 low bits, &64:msg2, &128:msg3, &256:varmsg, &512:text/sysex type (msg[0])
+  int setflag; // &1:selected, &2:muted, &4:ppqpos, &8:endppqpos, &16:msg1 high bits, &32:msg1 low bits, &64:msg2, &128:msg3, &256:varmsg, &512:text/sysex type (msg[0]), &16384:no sort after set
 } MIDI_eventprops;
 
 
@@ -430,7 +430,7 @@ enum { RAWMIDI_NOTESONLY=1, RAWMIDI_UNFILTERED=2 };
 #define PCM_SOURCE_EXT_ISABNORMALAUDIO  0x9000E // return 1 if rex, video, etc (meaning file export will just copy file directly rather than trim/converting)
 #define PCM_SOURCE_EXT_GETPOOLEDMIDIID 0x9000F // parm1=(char*)id, parm2=(int*)pool user count, parm3=(MediaItem_Take**)firstuser
 #define PCM_SOURCE_EXT_REMOVEFROMMIDIPOOL 0x90010 
-#define PCM_SOURCE_EXT_GETMIDIDATAHASH 0x90011 // parm1=(WDL_UINT64*)hash (64-bit hash of the MIDI source data)
+#define PCM_SOURCE_EXT_GETHASH 0x90011 // parm1=(WDL_UINT64*)hash (64-bit hash of the source data)
 #define PCM_SOURCE_EXT_GETIMAGE 0x90012  // parm1=(LICE_IBitmap**)image. parm2 = NULL or pointer to int, which is (w<<16)|h desired approx
 #define PCM_SOURCE_EXT_NOAUDIO 0x90013 
 #define PCM_SOURCE_EXT_HASMIDI 0x90014 // returns 1 if contains any MIDI data, parm1=(double*)time offset of first event
@@ -442,6 +442,10 @@ enum { RAWMIDI_NOTESONLY=1, RAWMIDI_UNFILTERED=2 };
 #define PCM_SOURCE_EXT_COUNTMIDIEVTS 0x90021 // parm1=(int*)notecnt, parm2=(int*)ccevtcnt, parm3=(int*)metaevtcnt
 #define PCM_SOURCE_EXT_GETSETMIDIEVT 0x90022 // parm1=(MIDI_eventprops*)event properties (NULL to delete); parm2=(int)event index (<0 to insert); parm2=(int)flag: 1=index counts notes only, 2=index counts CC only, 3=index counts meta-events only
 #define PCM_SOURCE_EXT_GETSUGGESTEDTEXT 0x90023 // parm1=char ** which will receive pointer to suggested label text, if any
+#define PCM_SOURCE_EXT_GETSCALE 0x90024 // parm1=unsigned int: &0xF=pitch (0=C), &0x10=root, &0x20=min2, &0x40=maj2, &0x80=min3, &0xF0=maj3, &0x100=4, etc) ; parm2=(char*)name (optional), parm3=int size of name buffer
+#define PCM_SOURCE_EXT_SELECTCONTENT 0x90025 // parm1=1 to select, 0 to deselect
+#define PCM_SOURCE_EXT_GETGRIDINFO 0x90026 // parm1=(double*)snap grid size, parm2=(double*)swing strength, parm3=(double*)note insert length, -1 if follows grid size
+#define PCM_SOURCE_EXT_SORTMIDIEVTS 0x9027
 
 // register with Register("pcmsrc",&struct ... and unregister with "-pcmsrc"
 typedef struct {
@@ -701,16 +705,17 @@ typedef struct accelerator_register_t
 
 
 /*
-** custom_action_register_t allows you to register ("custom_action") an action into a keyboard section action list
-** register("custom_action",ca) will return the command ID (instance-dependent but unique across all sections), or 0 if failed (e.g dupe idStr)
-** the related callback should be registered with "hookcommand2"
+** custom_action_register_t allows you to register ("custom_action") an action or a reascript into a section of the action list
+** register("custom_action",ca) will return the command ID (instance-dependent but unique across all sections), 
+** or 0 if failed (e.g dupe idStr for actions, or script not found/supported, etc)
+** for actions, the related callback should be registered with "hookcommand2"
 */
 
 typedef struct
 {
   int uniqueSectionId; // 0/100=main/main alt, 32063=media explorer, 32060=midi editor, 32061=midi event list editor, 32062=midi inline editor, etc
-  const char* idStr; // must be unique across all sections
-  const char* name;
+  const char* idStr; // must be unique across all sections for actions, NULL for reascripts (automatically generated)
+  const char* name; // name as it is displayed in the action list, or full path to a reascript file
   void *extra; // reserved for future use
 } custom_action_register_t;
 
