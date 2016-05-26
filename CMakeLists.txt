@@ -11,11 +11,11 @@ IF(APPLE)
    # SET( CMAKE_SHARED_LINKER_FLAGS_MINSIZEREL "-dead_strip" )
    # SET( CMAKE_MODULE_LINKER_FLAGS_MINSIZEREL "-dead_strip" )
    # SET( CMAKE_EXE_LINKER_FLAGS_MINSIZEREL "-dead_strip" )
-	ADD_DEFINITIONS(
-		-std=c++98
-		-stdlib=libstdc++
-		-Wno-c++11-extensions #avoid c++11 warning msg
-	)
+#	ADD_DEFINITIONS(
+#		-std=c++98
+#		-stdlib=libstdc++
+#		-Wno-c++11-extensions #avoid c++11 warning msg
+#	)
 	
 	FIND_LIBRARY(CARBON_LIBRARY Carbon)
 	FIND_LIBRARY(COCOA_LIBRARY Cocoa)
@@ -28,8 +28,6 @@ ADD_DEFINITIONS(-DSWELL_APP_PREFIX=SWELL_AMBIX)
 
 ################################################
 # INCLUDES
-	
-include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/jmde)
 include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/WDL)
 include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -37,8 +35,10 @@ include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # additional cmake find packages
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(libambix REQUIRED)
+find_package(libsndfile REQUIRED)
 
 include_directories (BEFORE ${LIBAMBIX_INCLUDE_DIR})
+include_directories (BEFORE ${LIBSNDFILE_INCLUDE_DIR})
 
 set (reaper_ambix_sources
 	${CMAKE_CURRENT_SOURCE_DIR}/src/libambixImport.cpp
@@ -75,6 +75,11 @@ IF(NOT WIN32)
 	
 ENDIF(NOT WIN32)
 
+IF(APPLE)
+  # set the output directory to REAPER Plugin dir
+  SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "~/Library/Application Support/REAPER/UserPlugins")
+ENDIF(APPLE)
+
 add_library (reaper_ambix SHARED
 	${reaper_ambix_sources}
 	)
@@ -84,3 +89,9 @@ SET_TARGET_PROPERTIES(reaper_ambix PROPERTIES PREFIX "")
 IF(APPLE)
 	target_link_libraries (reaper_ambix ${CARBON_LIBRARY} ${COCOA_LIBRARY})
 ENDIF(APPLE)
+
+
+target_link_libraries (reaper_ambix ${LIBSNDFILE_LIBRARY} )
+
+
+
