@@ -230,26 +230,26 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
     
     switch (m_sfinfo.fileformat) {
       case AMBIX_NONE:
-        sprintf(ambix_format, "AMBIX_NONE");
+        snprintf(ambix_format, 20, "AMBIX_NONE");
         break;
         
       case AMBIX_BASIC:
-        sprintf(ambix_format, "AMBIX_BASIC");
+        snprintf(ambix_format, 20, "AMBIX_BASIC");
         break;
         
       case AMBIX_EXTENDED:
-        sprintf(ambix_format, "AMBIX_EXTENDED");
+        snprintf(ambix_format, 20,"AMBIX_EXTENDED");
         break;
         
     }
     
     char matrix[20];
     if (m_matrix)
-      sprintf(matrix, "yes [%dx%d]", m_matrix->cols, m_matrix->rows);
+      snprintf(matrix, 20, "yes [%dx%d]", m_matrix->cols, m_matrix->rows);
     else
-      sprintf(matrix, "no");
+      snprintf(matrix, 20, "no");
     
-    sprintf(temp,"Length: %s:\r\n"
+    snprintf(temp, 4096, "Length: %s:\r\n"
             "Samplerate: %.0f\r\n"
             "Bits/sample: %d\r\n"
             "\nFormat: %s\r\n"
@@ -265,7 +265,7 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
     
     strncpy(buf,temp,buflen);
   } else
-    sprintf(buf,"Error: File hasn't been opened succesfully");
+    snprintf(buf, buflen, "Error: File hasn't been opened succesfully");
   
 }
 
