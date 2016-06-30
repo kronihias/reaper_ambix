@@ -77,7 +77,8 @@ ENDIF(NOT WIN32)
 
 IF(APPLE)
   # set the output directory to REAPER Plugin dir
-  SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "~/Library/Application Support/REAPER/UserPlugins")
+  #SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "~/Library/Application Support/REAPER/UserPlugins")
+  SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "/Applications/REAPER.app/Contents/Plugins")
 ENDIF(APPLE)
 
 add_library (reaper_ambix SHARED
