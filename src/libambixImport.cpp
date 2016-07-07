@@ -17,14 +17,17 @@ void (*ptr_ambix_matrix_destroy) (ambix_matrix_t *mtx) ;
 ambix_matrix_t* (*ptr_ambix_matrix_init) (uint32_t rows, uint32_t cols, ambix_matrix_t *mtx) ;
 void (*ptr_ambix_matrix_deinit) (ambix_matrix_t *mtx) ;
 
+ambix_err_t (*ptr_ambix_add_marker) (ambix_t *ambix, ambix_marker_t *marker) ;
+ambix_err_t (*ptr_ambix_add_region) (ambix_t *ambix, ambix_region_t *region) ;
+ambix_marker_t* (*ptr_ambix_get_marker)(ambix_t *ambix, uint32_t id) ;
+ambix_region_t* (*ptr_ambix_get_region)(ambix_t *ambix, uint32_t id) ;
+
 ambix_err_t 	(*ptr_ambix_matrix_multiply_float64) (float64_t *dest, const ambix_matrix_t *mtx, const float64_t *source, int64_t frames);
 
 ambix_matrix_t * 	(*ptr_ambix_matrix_fill) (ambix_matrix_t *matrix, ambix_matrixtype_t type);
 ambix_err_t 	(*ptr_ambix_matrix_fill_data) (ambix_matrix_t *mtx, const float32_t *data);
 
 ambix_matrix_t* (*ptr_ambix_matrix_pinv)(const ambix_matrix_t*matrix, ambix_matrix_t*pinv);
-
-struct SNDFILE_tag (*ptr_ambix_get_sndfile) (ambix_t *ambix) ;
 
 uint32_t (*ptr_ambix_order2channels) (uint32_t order) ;
 int32_t (*ptr_ambix_channels2order) (uint32_t channels) ;
@@ -68,7 +71,10 @@ int ImportLibAmbixFunctions()
         *((void **)&ptr_ambix_matrix_multiply_float64)=(void*)GetProcAddress(g_hLibAmbix,"ambix_matrix_multiply_float64");
         *((void **)&ptr_ambix_matrix_fill_data)=(void*)GetProcAddress(g_hLibAmbix,"ambix_matrix_fill_data");
         *((void **)&ptr_ambix_matrix_pinv)=(void*)GetProcAddress(g_hLibAmbix,"ambix_matrix_pinv");
-        *((void **)&ptr_ambix_get_sndfile)=(void*)GetProcAddress(g_hLibAmbix,"ambix_get_sndfile");
+        *((void **)&ptr_ambix_add_marker)=(void*)GetProcAddress(g_hLibAmbix,"ambix_add_marker");
+        *((void **)&ptr_ambix_add_region)=(void*)GetProcAddress(g_hLibAmbix,"ambix_add_region");
+        *((void **)&ptr_ambix_get_marker)=(void*)GetProcAddress(g_hLibAmbix,"ambix_get_marker");
+        *((void **)&ptr_ambix_get_region)=(void*)GetProcAddress(g_hLibAmbix,"ambix_get_region");
       
         // *((void **)&ptr_sf_version_string)=(void*)GetProcAddress(g_hLibAmbix,"sf_version_string");
         // if (!ptr_sf_version_string) errcnt++;
@@ -142,7 +148,10 @@ int ImportLibAmbixFunctions()
             *(void **)(&ptr_ambix_matrix_multiply_float64) = dlsym(dll, "ambix_matrix_multiply_float64");
             *(void **)(&ptr_ambix_matrix_fill_data) = dlsym(dll, "ambix_matrix_fill_data");
             *(void **)(&ptr_ambix_matrix_pinv) = dlsym(dll, "ambix_matrix_pinv");
-            *(void **)(&ptr_ambix_get_sndfile) = dlsym(dll, "ambix_get_sndfile");
+            *(void **)(&ptr_ambix_add_marker) = dlsym(dll, "ambix_add_marker");
+            *(void **)(&ptr_ambix_add_region) = dlsym(dll, "ambix_add_region");
+            *(void **)(&ptr_ambix_get_marker) = dlsym(dll, "ambix_get_marker");
+            *(void **)(&ptr_ambix_get_region) = dlsym(dll, "ambix_get_region");
           
         }
         if (!dll)

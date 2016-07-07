@@ -13,6 +13,9 @@ extern void (*ptr_ambix_matrix_destroy) (ambix_matrix_t *mtx) ;
 extern ambix_matrix_t* (*ptr_ambix_matrix_init) (uint32_t rows, uint32_t cols, ambix_matrix_t *mtx) ;
 extern void (*ptr_ambix_matrix_deinit) (ambix_matrix_t *mtx) ;
 
+extern ambix_marker_t* (*ptr_ambix_get_marker)(ambix_t *ambix, uint32_t id) ;
+extern ambix_region_t* (*ptr_ambix_get_region)(ambix_t *ambix, uint32_t id) ;
+
 extern ambix_err_t 	(*ptr_ambix_matrix_multiply_float64) (float64_t *dest, const ambix_matrix_t *mtx, const float64_t *source, int64_t frames);
 
 extern uint32_t (*ptr_ambix_order2channels) (uint32_t order) ;
@@ -69,7 +72,7 @@ static void merge_samples(float64_t*buf1, uint32_t chan1, uint32_t want1,
 LSFW_SimpleMediaDecoder::LSFW_SimpleMediaDecoder()
 {
   // ShowConsoleMsg("constructing LSFW_SimpleMediaDecoder");
-  m_filename=0;
+  m_filename=NULL;
   
   m_nch=0;
   m_bps=0;
@@ -82,25 +85,14 @@ LSFW_SimpleMediaDecoder::LSFW_SimpleMediaDecoder()
   /* CUES */
   m_numcues = 0;
   
-  /* the cues need to be in sequential order to be displayed correctly by reaper */
-  /*
-  AddCueToList(0, 1., 0., false, "my name", 0);
-  
-  AddCueToList(1, 2., 4., true, "test region", 0);
-  
-  AddCueToList(2, 10., 0., false, "2nd test marker", 0);
-  
-  AddCueToList(3, 12., 0., false, "3rd test marker", 0);
-   */
 }
 
 LSFW_SimpleMediaDecoder::~LSFW_SimpleMediaDecoder()
 {
   // ShowConsoleMsg("destroying LSFW_SimpleMediaDecoder");
-  freeCueList();
-  
   Close(true);
-  free(m_filename);
+  if (m_filename)
+    free(m_filename);
 }
 
 bool LSFW_SimpleMediaDecoder::IsOpen()
@@ -151,7 +143,7 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
   } else
   {
 #ifdef REAPER_DEBUG_OUTPUT_TRACING
-    ShowConsoleMsg("succeeded to open file with libsndfile");
+    ShowConsoleMsg("succeeded to open file with libambix");
 #endif
     
     /* retrieve file information */
@@ -200,6 +192,37 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
     
     m_nch = m_ambi_out_channels+m_xtrachannels;
     m_srate = m_sfinfo.samplerate;
+    
+    /* retrieve markers */
+    /* the cues need to be in sequential order to be displayed correctly by reaper */
+    
+    uint32_t id = 0;
+    while (1) {
+      ambix_marker_t* new_marker = NULL;
+      new_marker = ptr_ambix_get_marker(m_fh, id);
+      if (new_marker == NULL)
+        break;
+      if (new_marker->position > m_length)
+        break;
+      printf("Add Marker: ID: %d, POS: %f, NAME: %s\n", id, new_marker->position/m_srate, new_marker->name);
+      AddCueToList(m_numcues, new_marker->position/m_srate, 0., false, new_marker->name, 0);
+      m_numcues++;
+      id++;
+    }
+    
+    id = 0;
+    while (1) {
+      ambix_region_t* new_region = NULL;
+      new_region = ptr_ambix_get_region(m_fh, id);
+      if (new_region == NULL)
+        break;
+      if (new_region->start_position > m_length)
+        break;
+      printf("Add Region: ID: %d, ST_POS: %f, END_POS: %f, NAME Len: %lu, NAME: %s\n", id, new_region->start_position/m_srate, new_region->end_position/m_srate, strlen(new_region->name), new_region->name);
+      AddCueToList(m_numcues, new_region->start_position/m_srate, new_region->end_position/m_srate, true, new_region->name, 0);
+      m_numcues++;
+      id++;
+    }
   }
   
 }
@@ -211,6 +234,8 @@ void LSFW_SimpleMediaDecoder::Close(bool fullClose)
     // delete any decoder data, but we have nothing dynamically allocated
     
   }
+  freeCueList();
+  
   if (m_fh)
     ptr_ambix_close(m_fh);
   
@@ -379,7 +404,8 @@ void LSFW_SimpleMediaDecoder::AddCueToList(int id, double time, double endtime, 
 	m_cuelist[m_numcues].m_time = time;
 	m_cuelist[m_numcues].m_endtime = endtime;
 	m_cuelist[m_numcues].m_isregion = isregion;
-	m_cuelist[m_numcues].m_name = strdup(name);
+  if (name)
+    m_cuelist[m_numcues].m_name = strdup(name);
 	m_cuelist[m_numcues].m_flags= flags;
   
   m_numcues += 1;
@@ -389,9 +415,11 @@ void LSFW_SimpleMediaDecoder::AddCueToList(int id, double time, double endtime, 
 void LSFW_SimpleMediaDecoder::freeCueList()
 {
   for (int i=0; i<m_numcues; i++) {
-    free(m_cuelist[i].m_name);
+    if (m_cuelist[i].m_name)
+      free(m_cuelist[i].m_name);
   }
-  free(m_cuelist);
+  if (m_cuelist)
+    free(m_cuelist);
   m_cuelist = NULL;
   m_numcues = 0;
 }
@@ -430,7 +458,8 @@ int LSFW_SimpleMediaDecoder::Extended(int call, void *parm1, void *parm2, void *
 ISimpleMediaDecoder* LSFW_SimpleMediaDecoder::Duplicate()
 {
   LSFW_SimpleMediaDecoder *r=new LSFW_SimpleMediaDecoder;
-  free(r->m_filename);
+  if (r->m_filename)
+    free(r->m_filename);
   r->m_filename = m_filename ? strdup(m_filename) : NULL;
   return r;
 }

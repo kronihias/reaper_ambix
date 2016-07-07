@@ -15,7 +15,7 @@
 
 #include <ambix/ambix.h>
 /* libambix's private header */
-#include <ambix/private.h>
+// #include <ambix/private.h>
 #include "libambixImport.h"
 
 #include "resource.h"
@@ -23,12 +23,6 @@
 /* include adapter matrices */
 #include "adaptermatrices/adapter_hemi.h"
 #include "adaptermatrices/adapter_circular.h"
-
-
-/* marker support */
-#include "sndfile.h"
-#include "cafdefines.h"
-
 
 #ifdef _MSC_VER
 # define snprintf _snprintf
@@ -52,7 +46,8 @@ extern ambix_err_t 	(*ptr_ambix_matrix_fill_data) (ambix_matrix_t *mtx, const fl
 extern ambix_matrix_t* (*ptr_ambix_matrix_pinv)(const ambix_matrix_t*matrix, ambix_matrix_t*pinv);
 extern ambix_err_t 	(*ptr_ambix_matrix_multiply_float64) (float64_t *dest, const ambix_matrix_t *mtx, const float64_t *source, int64_t frames);
 
-extern SNDFILE* (*ptr_ambix_get_sndfile) (ambix_t *ambix) ;
+extern ambix_err_t (*ptr_ambix_add_marker) (ambix_t *ambix, ambix_marker_t *marker) ;
+extern ambix_err_t (*ptr_ambix_add_region) (ambix_t *ambix, ambix_region_t *region) ;
 
 extern void (*format_timestr)(double tpos, char *buf, int buflen);
 extern REAPER_PeakBuild_Interface *(*PeakBuild_Create)(PCM_source *src, const char *fn, int srate, int nch);
@@ -123,9 +118,6 @@ public:
     m_st = 0.f;
     m_marker_written = false;
     
-    m_numstrings = 0;
-    m_stringsbufsize = 0;
-    
     m_isopen = false;
     
     m_peakbuild=0;
@@ -139,10 +131,6 @@ public:
     m_fn.Set(fn);
     
     m_adapter_matrix = NULL; // this one gets passed
-    
-    memset(&m_sf_chunk_marker, 0, sizeof(m_sf_chunk_marker));
-    memset(&m_sf_chunk_region, 0, sizeof(m_sf_chunk_region));
-    memset(&m_sf_chunk_strings, 0, sizeof(m_sf_chunk_strings));
     
     // retrieve settings
     
@@ -332,9 +320,6 @@ public:
   
   ~PCM_sink_ambix()
   {
-    /* print ambix info when everything is initialized */
-    ambix_
-    FreeMarkers();
     
     if (IsOpen())
     {
@@ -468,11 +453,12 @@ public:
   
   virtual int Extended(int call, void *parm1, void *parm2, void *parm3) override
   {
-    printf("sink extended called: 0x%.8x\n", call);
+    // printf("sink extended called: 0x%.8x\n", call);
     
     /* use this to retrieve cues (markers) !*/
-    /* this does not work, probably not implemented */
+    /* Works! */
     
+    /*
     if (call == PCM_SINK_EXT_ADDCUE)
     {
       // parm1=(REAPER_cue*)cue
@@ -482,7 +468,7 @@ public:
       
       return 1;
     }
-    
+    */
     return 0;
   }
   
@@ -501,125 +487,15 @@ public:
     EnumerateMarkers();
   }
   
-  
-  /* add a string to CAFStrings */
-  uint32_t AddStringToChunk(char *string)
-  {
-    /* init string chunk */
-    
-    if (strlen(string)<1)
-      return 0;
-    
-    if (!m_numstrings)
-    {
-      const char*id="strg";
-      snprintf (m_sf_chunk_strings.id, sizeof (m_sf_chunk_strings.id), "%s", id);
-      m_sf_chunk_strings.id_size = 4 ;
-      
-      // reserve space for strings later
-      m_sf_chunk_strings.data = malloc(SIZEOF_CAFStrings);
-      memset(m_sf_chunk_strings.data, 0, SIZEOF_CAFStrings);
-      
-    }
-    
-    m_numstrings += 1;
-    
-    uint32_t newstringsbufsize = m_stringsbufsize + (strlen(string)+1)*sizeof(unsigned char); // +1 for null termination!
-    
-    
-    
-    m_sf_chunk_strings.data = realloc(m_sf_chunk_strings.data, SIZEOF_CAFStrings+m_numstrings*sizeof(CAFStringID)+newstringsbufsize);
-    
-    // offset the data pointer to the old start of mStrings
-    unsigned char* bytePtr = reinterpret_cast<unsigned char*>(m_sf_chunk_strings.data);
-    bytePtr += (SIZEOF_CAFStrings + (m_numstrings-1)*sizeof(CAFStringID) );
-    
-    // copy the strings back in the buffer to make place for an additional entry in the mStringsIDs table
-    memmove(bytePtr+sizeof(CAFStringID),bytePtr,m_stringsbufsize);
-    
-    CAFStringID* new_stringid = (CAFStringID*)bytePtr;
-    // update CAFStringID table
-    new_stringid->mStringID = m_numstrings;
-    REAPER_BSWAPINTMEM(&new_stringid->mStringID); // swap 4bytes to big endian
-    
-    new_stringid->mStringStartByteOffset = m_stringsbufsize;
-    REAPER_BSWAPINTMEM8(&new_stringid->mStringStartByteOffset); // swap 8bytes to big endian
-    
-    // write the null terminated string to the end
-    bytePtr += (sizeof(CAFStringID) + m_stringsbufsize);
-    memcpy(bytePtr, string, strlen(string)*sizeof(unsigned char));
-    bytePtr[strlen(string)] = 0; // set the last char to NUL
-    
-    /* update the Strings chunk data */
-    CAFStrings* caf_strings = (CAFStrings*)m_sf_chunk_strings.data;
-    caf_strings->mNumEntries = m_numstrings;
-    REAPER_BSWAPINTMEM(&caf_strings->mNumEntries); // swap 4bytes to big endian
-    
-    m_stringsbufsize = newstringsbufsize;
-    
-    /* update the size of the strings chunk */
-    m_sf_chunk_strings.datalen = SIZEOF_CAFStrings+m_numstrings*sizeof(CAFStringID)+newstringsbufsize;
-    
-    return m_numstrings;
-  }
-  
   void EnumerateMarkers()
   {
-    
     if (!m_marker_written)
     {
-      /* -------------------------------------- */
-      // reset the marker chunk
-      
-      if (m_sf_chunk_marker.data)
-        free(m_sf_chunk_marker.data);
-      
-      memset(&m_sf_chunk_marker, 0, sizeof(m_sf_chunk_marker));
-      
-      const char*markid="mark";
-      snprintf (m_sf_chunk_marker.id, sizeof (m_sf_chunk_marker.id), "%s", markid);
-      m_sf_chunk_marker.id_size = 4 ;
-      
-      // reserve space for markers later
-      m_sf_chunk_marker.data = malloc(2*sizeof(uint32_t));// malloc(sizeof(CAFMarkerChunk));
-      memset(m_sf_chunk_marker.data, 0, 2*sizeof(uint32_t));
-      
-      CAFMarkerChunk* marker_chunk = (CAFMarkerChunk*)m_sf_chunk_marker.data;
-      
-      marker_chunk->mSMPTE_TimeType = kCAF_SMPTE_TimeTypeNone;
-      
-      /* -------------------------------------- */
-      // reset the region chunk
-      
-      if (m_sf_chunk_region.data)
-        free(m_sf_chunk_region.data);
-      
-      memset(&m_sf_chunk_region, 0, sizeof(m_sf_chunk_region));
-      
-      const char*regnid="regn";
-      snprintf (m_sf_chunk_region.id, sizeof (m_sf_chunk_region.id), "%s", regnid);
-      m_sf_chunk_region.id_size = 4 ;
-      
-      
-      // reserve space for regions later
-      m_sf_chunk_region.data = malloc(2*sizeof(uint32_t));// malloc(sizeof(CAFMarkerChunk));
-      memset(m_sf_chunk_region.data, 0, 2*sizeof(uint32_t));
-      
-      CAFRegionChunk* region_chunk = (CAFRegionChunk*)m_sf_chunk_region.data;
-      
-      region_chunk->mSMPTE_TimeType = kCAF_SMPTE_TimeTypeNone;
-      
-      /* -------------------------------------- */
-      
-      
       /* enumerate the project markers - enumProjectMarkers */
       int markerIndex = 0;
       bool markerIsRegion;
       double markerPosition, markerRegionEnd;
       char *markerName;
-      
-      int numMarkers = 0;
-      int numRegions = 0;
       
       while ((markerIndex = enumProjectMarkers(markerIndex, &markerIsRegion, &markerPosition, &markerRegionEnd, &markerName, NULL)) != 0)
       {
@@ -627,183 +503,35 @@ public:
         
         if (!markerIsRegion)
         {
-          numMarkers ++;
-          
-          m_sf_chunk_marker.data = realloc(m_sf_chunk_marker.data, 2*sizeof(uint32_t) + numMarkers*sizeof(CAFMarker));
-          
-          if (!m_sf_chunk_marker.data)
-            printf("realloc returned nullptr\n");
-          
-          // offset the data pointer by 2*uint32_t to point to start of markers
-          unsigned char* bytePtr = reinterpret_cast<unsigned char*>(m_sf_chunk_marker.data);
-          bytePtr += 2*sizeof(uint32_t);
-          
-          CAFMarker* new_marker = (CAFMarker*) bytePtr;// &marker_chunk->mMarkers[numMarkers-1];
-          
-          
-          new_marker += numMarkers-1;
-          
-          memset(new_marker, 0, sizeof(CAFMarker));
-          
-          new_marker->mType = kCAFMarkerType_Generic;
-          REAPER_BSWAPINTMEM(&new_marker->mType); // swap 4bytes to big endian
-          
-          /* FramePosition is in Samples! m_st is the Render time offset */
-          new_marker->mFramePosition = (double) m_srate*(markerPosition-m_st);
-          REAPER_BSWAPINTMEM8(&new_marker->mFramePosition); // swap 8bytes to big endian
-          
-          new_marker->mMarkerID = AddStringToChunk(markerName); // string id
-          REAPER_BSWAPINTMEM(&new_marker->mMarkerID); // swap 4bytes to big endian
-          
-          new_marker->mChannel = 0; // 0 means for all channels
+          double position = m_srate*(markerPosition-m_st);
+          if (position >= 0.) {
+            ambix_marker_t new_marker;
+            memset(&new_marker, 0, sizeof(ambix_marker_t));
+            new_marker.position = position;
+            strncpy(new_marker.name, markerName, 255);
+            
+            ptr_ambix_add_marker(m_fh, &new_marker);
+          }
         } // end add Single Marker
         else
         { // add Region
-          
-          numRegions++;
-          
-          // size: CAFRegionChunk + numRegions*CAFRegion + numRegions*2*CAFMarker
-          m_sf_chunk_region.data = realloc(m_sf_chunk_region.data, 2*sizeof(uint32_t) + numRegions*SIZEOF_CAFRegion + numRegions*2*sizeof(CAFMarker));
-          
-          if (!m_sf_chunk_region.data)
-            printf("realloc returned nullptr\n");
-          
-          // 2 markers: begin and end of region - this is supported by REAPER
-          int size_of_region = SIZEOF_CAFRegion+2*sizeof(CAFMarker);
-          
-          // offset the data pointer by 2*uint32_t to point to start of the first CAFRegion
-          unsigned char* bytePtr = reinterpret_cast<unsigned char*>(m_sf_chunk_region.data);
-          bytePtr += 2*sizeof(uint32_t);
-          
-          bytePtr += (numRegions-1)*size_of_region;
-          
-          CAFRegion* new_region = (CAFRegion*) bytePtr;
-          memset(new_region, 0, SIZEOF_CAFRegion);
-          
-          new_region->mRegionID = numRegions; // not connected to string i think?
-          REAPER_BSWAPINTMEM(&new_region->mRegionID); // swap 4bytes to big endian
-          
-          new_region->mFlags = 0;
-          
-          new_region->mNumberMarkers = 2; // start and end marker
-          REAPER_BSWAPINTMEM(&new_region->mNumberMarkers); // swap 4bytes to big endian
-          
-          //////////////
-          // offset pointer to start marker of region
-          bytePtr += 3*sizeof(uint32_t);
-          
-          CAFMarker* start_marker = (CAFMarker*) bytePtr;
-          memset(start_marker, 0, sizeof(CAFMarker));
-          
-          start_marker->mType = kCAFMarkerType_RegionStart;
-          REAPER_BSWAPINTMEM(&start_marker->mType); // swap 4bytes to big endian
-          
-          /* FramePosition is in Samples! m_st is the Render time offset */
-          start_marker->mFramePosition = (double) m_srate*(markerPosition-m_st);
-          REAPER_BSWAPINTMEM8(&start_marker->mFramePosition); // swap 8bytes to big endian
-          
-          uint32_t stringId = AddStringToChunk(markerName);
-          start_marker->mMarkerID = stringId; // string id
-          REAPER_BSWAPINTMEM(&start_marker->mMarkerID); // swap 4bytes to big endian
-          
-          start_marker->mChannel = 0; // 0 means for all channels
-         
-          ///////////
-          // offset pointer to end marker of region
-          bytePtr += sizeof(CAFMarker);
-          
-          CAFMarker* end_marker = (CAFMarker*) bytePtr;
-          memset(end_marker, 0, sizeof(CAFMarker));
-          
-          end_marker->mType = kCAFMarkerType_RegionEnd;
-          REAPER_BSWAPINTMEM(&end_marker->mType); // swap 4bytes to big endian
-          
-          /* FramePosition is in Samples! m_st is the Render time offset */
-          end_marker->mFramePosition = (double) m_srate*(markerRegionEnd-m_st);
-          REAPER_BSWAPINTMEM8(&end_marker->mFramePosition); // swap 8bytes to big endian
-          
-          end_marker->mMarkerID = stringId; // string id
-          REAPER_BSWAPINTMEM(&end_marker->mMarkerID); // swap 4bytes to big endian
-          
-          end_marker->mChannel = 0; // 0 means for all channels
-          
+          double start_position = m_srate*(markerPosition-m_st);
+          if (start_position >= 0.)
+          {
+            ambix_region_t new_region;
+            memset(&new_region, 0, sizeof(ambix_region_t));
+            new_region.start_position = start_position;
+            new_region.end_position = (double) m_srate*(markerRegionEnd-m_st);
+            strncpy(new_region.name, markerName, 255);
+            
+            ptr_ambix_add_region(m_fh, &new_region);
+          }
         } // end add Region
-        
-        
       }
-      
-      /* update the size of the marker chunk */
-      marker_chunk = (CAFMarkerChunk*)m_sf_chunk_marker.data;
-      
-      marker_chunk->mNumberMarkers = numMarkers;
-      REAPER_BSWAPINTMEM(&marker_chunk->mNumberMarkers); // swap 4bytes to big endian
-      
-      m_sf_chunk_marker.datalen = 2*sizeof(uint32_t)+sizeof(CAFMarker)*numMarkers;//sizeof(CAFMarkerChunk)+sizeof(CAFMarker)*numMarkers;
-      
-      /* update the size of the region chunk */
-      region_chunk = (CAFRegionChunk*)m_sf_chunk_region.data;
-      
-      region_chunk->mNumberRegions = numRegions;
-      REAPER_BSWAPINTMEM(&region_chunk->mNumberRegions); // swap 4bytes to big endian
-      
-      m_sf_chunk_region.datalen = 2*sizeof(uint32_t) + numRegions*SIZEOF_CAFRegion + numRegions*2*sizeof(CAFMarker);
-      
-      // get the sndfile pointer for advanced functionality
-      SNDFILE* fh_sndfile = NULL;
-      
-      fh_sndfile = ptr_ambix_get_sndfile(m_fh);
-      
-      if (!fh_sndfile)
-        printf("Did not get the sndfile handler...\n");
-      
-      int err = 0;
-      
-      if (numMarkers)
-      {
-        // set the marker chunk
-        err = sf_set_chunk (fh_sndfile, &m_sf_chunk_marker);
-        printf("Setting marker chunk returned: %s...\n", sf_error_number(err));
-      }
-      
-      if (numRegions)
-      {
-        // set the region chunk
-        err = sf_set_chunk (fh_sndfile, &m_sf_chunk_region);
-        printf("Setting region chunk returned: %s...\n", sf_error_number(err));
-      }
-      
-      if (m_numstrings)
-      {
-        // set the region chunk
-        err = sf_set_chunk (fh_sndfile, &m_sf_chunk_strings);
-        printf("Setting strings chunk returned: %s...\n", sf_error_number(err));
-      }
-      
+      printf("Done writing markers/regions...\n");
       m_marker_written = true;
     } // end marker written flag false
     
-  }
-  
-  /* Free the memory allocated for the marker chunk */
-  void FreeMarkers()
-  {
-    if (m_sf_chunk_marker.data)
-    free(m_sf_chunk_marker.data);
-    
-    if (m_sf_chunk_strings.data)
-      free(m_sf_chunk_strings.data);
-    
-    if (m_sf_chunk_region.data)
-      free(m_sf_chunk_region.data);
-    /*
-    CAFMarkerChunk* marker_chunk = (CAFMarkerChunk*)m_sf_chunk_marker.data;
-    
-    if (marker_chunk->mMarkers)
-      free(marker_chunk->mMarkers);
-      
-    marker_chunk->mNumberMarkers = 0;
-    marker_chunk->mMarkers = NULL;
-    */
   }
   
 private:
@@ -833,16 +561,7 @@ private:
   WDL_String m_fn;
   
   REAPER_PeakBuild_Interface *m_peakbuild;
-  
-  /* for markers */
-  SF_CHUNK_INFO m_sf_chunk_marker;
-  
-  SF_CHUNK_INFO m_sf_chunk_region;
-  
-  
-  SF_CHUNK_INFO m_sf_chunk_strings;
-  uint32_t m_numstrings;
-  uint32_t m_stringsbufsize;
+
 };
 
 static unsigned int GetFmt(const char **desc)
