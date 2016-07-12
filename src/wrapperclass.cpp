@@ -80,17 +80,18 @@ LSFW_SimpleMediaDecoder::LSFW_SimpleMediaDecoder()
   m_length=0;
   m_lastpos=0;
   m_lastblocklen=0;
-  m_fh=0;
+  m_fh=NULL;
   
   /* CUES */
   m_numcues = 0;
-  
+  m_retrieved_cues = false;
 }
 
 LSFW_SimpleMediaDecoder::~LSFW_SimpleMediaDecoder()
 {
   // ShowConsoleMsg("destroying LSFW_SimpleMediaDecoder");
   Close(true);
+  freeCueList();
   if (m_filename)
     free(m_filename);
 }
@@ -195,34 +196,39 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
     
     /* retrieve markers */
     /* the cues need to be in sequential order to be displayed correctly by reaper */
-    
-    uint32_t id = 0;
-    while (1) {
-      ambix_marker_t* new_marker = NULL;
-      new_marker = ptr_ambix_get_marker(m_fh, id);
-      if (new_marker == NULL)
-        break;
-      if (new_marker->position > m_length)
-        break;
-      printf("Add Marker: ID: %d, POS: %f, NAME: %s\n", id, new_marker->position/m_srate, new_marker->name);
-      AddCueToList(m_numcues, new_marker->position/m_srate, 0., false, new_marker->name, 0);
-      m_numcues++;
-      id++;
+    if (!m_retrieved_cues)
+    {
+      uint32_t id = 0;
+      while (1) {
+        ambix_marker_t* new_marker = NULL;
+        new_marker = ptr_ambix_get_marker(m_fh, id);
+        if (new_marker == NULL)
+          break;
+        if (new_marker->position > m_length)
+          break;
+        // printf("Add Marker: ID: %d, POS: %f, NAME: %s\n", id, new_marker->position/m_srate, new_marker->name);
+        AddCueToList(m_numcues, new_marker->position/m_srate, 0., false, new_marker->name, 0);
+        // m_numcues++; // this is done in AddCueToList
+        id++;
+      }
+
+      id = 0;
+      while (1) {
+        ambix_region_t* new_region = NULL;
+        new_region = ptr_ambix_get_region(m_fh, id);
+        if (new_region == NULL)
+          break;
+        if (new_region->start_position > m_length)
+          break;
+        // printf("Add Region: ID: %d, ST_POS: %f, END_POS: %f, NAME Len: %lu, NAME: %s\n", id, new_region->start_position/m_srate, new_region->end_position/m_srate, strlen(new_region->name), new_region->name);
+        AddCueToList(m_numcues, new_region->start_position/m_srate, new_region->end_position/m_srate, true, new_region->name, 0);
+        // m_numcues++; this is done in AddCueToList
+        id++;
+      }
+
+      m_retrieved_cues = true;
     }
     
-    id = 0;
-    while (1) {
-      ambix_region_t* new_region = NULL;
-      new_region = ptr_ambix_get_region(m_fh, id);
-      if (new_region == NULL)
-        break;
-      if (new_region->start_position > m_length)
-        break;
-      printf("Add Region: ID: %d, ST_POS: %f, END_POS: %f, NAME Len: %lu, NAME: %s\n", id, new_region->start_position/m_srate, new_region->end_position/m_srate, strlen(new_region->name), new_region->name);
-      AddCueToList(m_numcues, new_region->start_position/m_srate, new_region->end_position/m_srate, true, new_region->name, 0);
-      m_numcues++;
-      id++;
-    }
   }
   
 }
@@ -232,10 +238,10 @@ void LSFW_SimpleMediaDecoder::Close(bool fullClose)
   if (fullClose)
   {
     // delete any decoder data, but we have nothing dynamically allocated
-    
   }
-  freeCueList();
+  // freeCueList();
   
+  // printf("freed cue list\n");
   if (m_fh)
     ptr_ambix_close(m_fh);
   

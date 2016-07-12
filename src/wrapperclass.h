@@ -47,6 +47,7 @@ private:
     INT64 m_length; // length in sample-frames
     bool m_isreadingblock;
     
+    bool m_retrieved_cues;
     REAPER_cue *m_cuelist; // store the cue list
     int m_numcues; // num of stored cues
     
