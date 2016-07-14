@@ -4,6 +4,10 @@
 #include "reaper_plugin.h"
 #include <ambix/ambix.h>
 
+#ifdef _MSC_VER
+#  define snprintf _snprintf
+#endif
+
 class LSFW_SimpleMediaDecoder : public ISimpleMediaDecoder
 {
 public:
