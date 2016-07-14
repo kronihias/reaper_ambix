@@ -70,12 +70,12 @@ extern HINSTANCE g_hInst;
  2: SampleFormat (INT): 0: 16bit PCM, 1: 24 bit PCM, 2: 32 bit PCM, 3: 32 bit float, 4: 64 bit float
  3: NumExtraChannels (INT)
  4: Selected Reduction Method
- 4: do reduction (bool)
+ 5: do reduction (bool)
  
  // AdaptorMatrix
- 5: rows (uint32_t)
- 6: cols (uint32_t)
- 7......7+(rows*cols): data (float32_t)
+ 6: rows (uint32_t)
+ 7: cols (uint32_t)
+ 8......8+(rows*cols): data (float32_t)
  */
 typedef struct {
   int	fourCC;
@@ -85,6 +85,7 @@ typedef struct {
   uint32_t numextrachannels;
   uint32_t reduction_sel;
   int doreduction;
+  uint32_t writemarkers;
   // adaptor matrix
   uint32_t rows;
   uint32_t cols;
@@ -129,6 +130,7 @@ public:
     m_lensamples=0;
     m_filesize=0;
     m_fn.Set(fn);
+    m_writemarkers = 1;
     
     m_adapter_matrix = NULL; // this one gets passed
     
@@ -147,6 +149,8 @@ public:
         m_sampleformat = AMBIX_SAMPLEFORMAT_PCM24; // default fallback
       
       m_xtrachannels = REAPER_MAKELEINT(pAmbixConfigData->numextrachannels);
+      
+      m_writemarkers = REAPER_MAKELEINT(pAmbixConfigData->writemarkers);
       
       m_doreduction = (pAmbixConfigData->doreduction > 0) ? true : false; // if true L=(N+1)^2 channels are expected, otherwise C
       
@@ -489,6 +493,8 @@ public:
   
   void EnumerateMarkers()
   {
+    if (m_writemarkers == 0) // no markers or regions wanted
+      return;
     if (!m_marker_written)
     {
       /* enumerate the project markers - enumProjectMarkers */
@@ -510,7 +516,13 @@ public:
             new_marker.position = position;
             strncpy(new_marker.name, markerName, 255);
             
-            ptr_ambix_add_marker(m_fh, &new_marker);
+            bool startwithhash = (strncmp(new_marker.name, "#", 1) == 0) ? true : false;
+            if ( (m_writemarkers == 1) ||
+                (m_writemarkers == 3) ||
+                ((m_writemarkers == 2) && startwithhash) ||
+                ((m_writemarkers == 4) && startwithhash)
+                )
+              ptr_ambix_add_marker(m_fh, &new_marker);
           }
         } // end add Single Marker
         else
@@ -524,7 +536,13 @@ public:
             new_region.end_position = (double) m_srate*(markerRegionEnd-m_st);
             strncpy(new_region.name, markerName, 255);
             
-            ptr_ambix_add_region(m_fh, &new_region);
+            bool startwithhash = (strncmp(new_region.name, "#", 1) == 0) ? true : false;
+            if ( (m_writemarkers == 1) ||
+                 (m_writemarkers == 5) ||
+                 ((m_writemarkers == 2) && startwithhash) ||
+                 ((m_writemarkers == 6) && startwithhash)
+               )
+              ptr_ambix_add_region(m_fh, &new_region);
           }
         } // end add Region
       }
@@ -550,7 +568,17 @@ private:
   
   int m_order;
   int m_sampleformat;
-        
+  
+  // option for writing markers
+  // 0 "Do not include markers or regions"
+  // 1 "Include all Markers + Regions"
+  // 2 "Include Markers + Regions starting with #"
+  // 3 "Include Markers only"
+  // 4 "Include Markers starting with #"
+  // 5 "Include Regions only"
+  // 6 "Include Regions starting with #"
+  int m_writemarkers;
+  
   uint32_t m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels;
   
   bool m_doreduction;
@@ -642,6 +670,14 @@ static void setNumChannelsLabel(HWND hwndDlg, int numchannels)
   sprintf(q_text, "%d", numchannels);
   
   SetDlgItemText(hwndDlg, IDC_REQINCH_TXT, q_text);
+}
+
+/* add entry to marker selection */
+static void SetWritemarkerStr(HWND hwndDlg, const char* txt, int idx)
+{
+  int n = SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_GETCOUNT, 0, 0);
+  SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_ADDSTRING, n, (LPARAM)txt);
+  SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETITEMDATA, n, idx);
 }
 
 /* get item data of current selection of dropdown box */
@@ -773,6 +809,8 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
     
     pAmbixConfigData->doreduction = 1; // set this static for now, might be altered afterwards
     
+    pAmbixConfigData->writemarkers = getCurrentItemData(hwndDlg, IDC_WRITEMARKER);
+    
     /* AdaptorMatrix */
     
     uint32_t mtx_rows = 0;
@@ -869,6 +907,15 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SetExtrachannelsStr(hwndDlg, buf, i);
       }
       
+      // Write Marker options
+      SetWritemarkerStr(hwndDlg, "Do not include markers or regions", 0);
+      SetWritemarkerStr(hwndDlg, "Include all Markers + Regions", 1);
+      SetWritemarkerStr(hwndDlg, "Include Markers + Regions starting with #", 2);
+      SetWritemarkerStr(hwndDlg, "Include Markers only", 3);
+      SetWritemarkerStr(hwndDlg, "Include Markers starting with #", 4);
+      SetWritemarkerStr(hwndDlg, "Include Regions only", 5);
+      SetWritemarkerStr(hwndDlg, "Include Regions starting with #", 6);
+      
       /* END SETUP GUI */
       
       ///////////////////////////////
@@ -884,6 +931,7 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETCURSEL, 1, 0);
         SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, 0, 0);
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, 0, 0);
+        SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETCURSEL, 1, 0);
       }
       
       // parameters have been sent by reaper -> parse them and set gui accordingly
@@ -897,6 +945,7 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETCURSEL, pAmbixConfigData->sampleformat-1, 0);
         SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, pAmbixConfigData->numextrachannels, 0);
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, pAmbixConfigData->reduction_sel, 0);
+        SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETCURSEL, pAmbixConfigData->writemarkers, 0);
         
       }
       
@@ -1029,8 +1078,8 @@ static PCM_sink *CreateSink(const char *filename, void *cfg, int cfg_l, int nch,
   return 0;
 }
 
-pcmsink_register_t mySinkRegStruct={GetFmt,GetExtension,ShowConfig,CreateSink};
-//pcmsink_register_ext_t mySinkRegStruct={{GetFmt,GetExtension,ShowConfig,CreateSink}, ExtendedSinkInfo};
+//pcmsink_register_t mySinkRegStruct={GetFmt,GetExtension,ShowConfig,CreateSink};
+pcmsink_register_ext_t mySinkRegStruct={{GetFmt,GetExtension,ShowConfig,CreateSink}, ExtendedSinkInfo};
 
 // import the resources. Note: if you do not have these files, run "php ../WDL/swell/mac_resgen.php res.rc" from this directory
 #ifndef _WIN32 // MAC resources

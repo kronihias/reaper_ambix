@@ -39,8 +39,9 @@
 #define IDC_MATRIX_TEXT                 1015
 #define IDC_VBR_SLIDER                  1016
 #define IDC_MATRIX_TEXT2                1016
-#define IDC_ADAPTORMATRIX2              1017
 #define IDC_SAMPLEFORMAT                1017
+#define IDC_MARKERS                     1018
+#define IDC_WRITEMARKER                 1018
 #define IDC_EDIT3                       1019
 #define IDC_CHANNELLAYOUT               1023
 #define IDC_REVIEWMATRIX                1024
