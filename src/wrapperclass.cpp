@@ -1,27 +1,6 @@
 #include "wrapperclass.h"
-//#include "libsndfileImport.h"
 
-extern ambix_t* (*ptr_ambix_open) (const char *path, const ambix_filemode_t mode, ambix_info_t *ambixinfo) ;
-extern ambix_err_t (*ptr_ambix_close) (ambix_t *ambix) ;
-extern int64_t (*ptr_ambix_seek) (ambix_t *ambix, int64_t frames, int whence) ;
-extern int64_t (*ptr_ambix_readf_float64) (ambix_t *ambix, float64_t *ambidata, float64_t *otherdata, int64_t frames) ;
-extern int64_t (*ptr_ambix_writef_float32) (ambix_t *ambix, const float32_t *ambidata, const float32_t *otherdata, int64_t frames) ;
-extern const ambix_matrix_t* (*ptr_ambix_get_adaptormatrix) (ambix_t *ambix) ;
-extern ambix_err_t (*ptr_ambix_set_adaptormatrix) (ambix_t *ambix, const ambix_matrix_t *matrix) ;
-extern ambix_matrix_t* (*ptr_ambix_matrix_create) (void) ;
-extern void (*ptr_ambix_matrix_destroy) (ambix_matrix_t *mtx) ;
-extern ambix_matrix_t* (*ptr_ambix_matrix_init) (uint32_t rows, uint32_t cols, ambix_matrix_t *mtx) ;
-extern void (*ptr_ambix_matrix_deinit) (ambix_matrix_t *mtx) ;
-
-extern ambix_marker_t* (*ptr_ambix_get_marker)(ambix_t *ambix, uint32_t id) ;
-extern ambix_region_t* (*ptr_ambix_get_region)(ambix_t *ambix, uint32_t id) ;
-
-extern ambix_err_t 	(*ptr_ambix_matrix_multiply_float64) (float64_t *dest, const ambix_matrix_t *mtx, const float64_t *source, int64_t frames);
-
-extern uint32_t (*ptr_ambix_order2channels) (uint32_t order) ;
-extern int32_t (*ptr_ambix_channels2order) (uint32_t channels) ;
-extern int (*ptr_ambix_is_fullset) (uint32_t channels) ;
-
+/* libambix is statically linked; ambix_* symbols come from <ambix/ambix.h>. */
 
 extern void (*format_timestr)(double tpos, char *buf, int buflen);
 extern void (*update_disk_counters)(int read, int write);
@@ -132,12 +111,12 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
   /* however, i think it's nice to give the user feedback about the file details (stored channels,...) */
   // m_sfinfo.fileformat = AMBIX_BASIC;
   
-  m_fh=ptr_ambix_open(m_filename,AMBIX_READ,&m_sfinfo);
+  m_fh=ambix_open(m_filename,AMBIX_READ,&m_sfinfo);
   if (!m_fh)
   {
     printf("Failed to open file with libambix!\n");
     
-    ptr_ambix_close(m_fh);
+    ambix_close(m_fh);
     m_fh=0;
     
     return;
@@ -156,7 +135,7 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
     
     /* try to get the adapter matrix */
     m_matrix = NULL;
-    m_matrix=ptr_ambix_get_adaptormatrix(m_fh);
+    m_matrix=ambix_get_adaptormatrix(m_fh);
     
     if (m_matrix)
     {
@@ -170,7 +149,7 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
     }
     
     
-    m_order = ptr_ambix_channels2order(m_ambi_out_channels);
+    m_order = ambix_channels2order(m_ambi_out_channels);
     
     // printf("Ambix Fileformat: %d, Got Ambichannels: %d, Ambi Order: %d, Extrachannels: %d!\n", m_sfinfo.fileformat, m_sfinfo.ambichannels, m_order, m_sfinfo.extrachannels);
     
@@ -201,7 +180,7 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
       uint32_t id = 0;
       while (1) {
         ambix_marker_t* new_marker = NULL;
-        new_marker = ptr_ambix_get_marker(m_fh, id);
+        new_marker = ambix_get_marker(m_fh, id);
         if (new_marker == NULL)
           break;
         if (new_marker->position > m_length)
@@ -215,7 +194,7 @@ void LSFW_SimpleMediaDecoder::Open(const char *filename, int diskreadmode, int d
       id = 0;
       while (1) {
         ambix_region_t* new_region = NULL;
-        new_region = ptr_ambix_get_region(m_fh, id);
+        new_region = ambix_get_region(m_fh, id);
         if (new_region == NULL)
           break;
         if (new_region->start_position > m_length)
@@ -243,7 +222,7 @@ void LSFW_SimpleMediaDecoder::Close(bool fullClose)
   
   // printf("freed cue list\n");
   if (m_fh)
-    ptr_ambix_close(m_fh);
+    ambix_close(m_fh);
   
   m_fh=0;
 }
@@ -314,7 +293,7 @@ void LSFW_SimpleMediaDecoder::SetPosition(INT64 pos)
     // todo: if decoder, seek decoder (rather than file)
     
     if (pos!=m_lastpos+m_lastblocklen) // this condition prevents glitches when Reaper plays this media decoder resampled
-      ptr_ambix_seek(m_fh,pos,SEEK_SET);
+      ambix_seek(m_fh,pos,SEEK_SET);
     m_lastpos=pos;
     //char buf[200];
     //sprintf(buf,"seeked to %d",pos);
@@ -342,10 +321,10 @@ int LSFW_SimpleMediaDecoder::ReadSamples(double *buf, int length)
       xtrabuf = (float64_t*)calloc(length*m_xtrachannels, sizeof(float64_t));
       
       /* read raw data from file */
-      rdframes=ptr_ambix_readf_float64(m_fh, ambi_in_buf, xtrabuf, length);
+      rdframes=ambix_readf_float64(m_fh, ambi_in_buf, xtrabuf, length);
       
       /* convert to full ambisonic set in case there is an adapter matrix... */
-      ptr_ambix_matrix_multiply_float64(ambi_out_buf, m_matrix, ambi_in_buf, rdframes);
+      ambix_matrix_multiply_float64(ambi_out_buf, m_matrix, ambi_in_buf, rdframes);
       
       /* merge samples to one continuous buffer for reaper */
       merge_samples(ambi_out_buf, m_ambi_out_channels, m_ambi_out_channels,
@@ -369,7 +348,7 @@ int LSFW_SimpleMediaDecoder::ReadSamples(double *buf, int length)
       xtrabuf = (float64_t*)calloc(length*m_xtrachannels, sizeof(float64_t));
       
       /* read raw data from file */
-      rdframes=ptr_ambix_readf_float64(m_fh, ambi_out_buf, xtrabuf, length);
+      rdframes=ambix_readf_float64(m_fh, ambi_out_buf, xtrabuf, length);
       
       /* no need to apply adaper matrix, merge directly for reaper... */
       merge_samples(ambi_out_buf, m_ambi_out_channels, m_ambi_out_channels,

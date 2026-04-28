@@ -13,10 +13,14 @@
 
 // #include "filewrite.h"
 
+#ifdef __clang__
+# pragma clang diagnostic push
+# pragma clang diagnostic ignored "-Wignored-pragmas"
+#endif
 #include <ambix/ambix.h>
-/* libambix's private header */
-// #include <ambix/private.h>
-#include "libambixImport.h"
+#ifdef __clang__
+# pragma clang diagnostic pop
+#endif
 
 #include "resource.h"
 
@@ -32,22 +36,8 @@
 // short for AMbixSInk
 #define SINK_FOURCC REAPER_FOURCC('a','m','s','i')
 
-extern ambix_t* (*ptr_ambix_open) (const char *path, const ambix_filemode_t mode, ambix_info_t *ambixinfo) ;
-extern ambix_err_t (*ptr_ambix_close) (ambix_t *ambix) ;
-extern int64_t (*ptr_ambix_writef_float64) (ambix_t *ambix, const float64_t *ambidata, const float64_t *otherdata, int64_t frames) ;
-extern ambix_err_t (*ptr_ambix_set_adaptormatrix) (ambix_t *ambix, const ambix_matrix_t *matrix) ;
-extern const ambix_matrix_t* (*ptr_ambix_get_adaptormatrix) (ambix_t *ambix) ;
-
-extern ambix_matrix_t* (*ptr_ambix_matrix_create) (void) ;
-extern void (*ptr_ambix_matrix_destroy) (ambix_matrix_t *mtx) ;
-extern ambix_matrix_t* (*ptr_ambix_matrix_init) (uint32_t rows, uint32_t cols, ambix_matrix_t *mtx) ;
-extern ambix_matrix_t * 	(*ptr_ambix_matrix_fill) (ambix_matrix_t *matrix, ambix_matrixtype_t type);
-extern ambix_err_t 	(*ptr_ambix_matrix_fill_data) (ambix_matrix_t *mtx, const float32_t *data);
-extern ambix_matrix_t* (*ptr_ambix_matrix_pinv)(const ambix_matrix_t*matrix, ambix_matrix_t*pinv);
-extern ambix_err_t 	(*ptr_ambix_matrix_multiply_float64) (float64_t *dest, const ambix_matrix_t *mtx, const float64_t *source, int64_t frames);
-
-extern ambix_err_t (*ptr_ambix_add_marker) (ambix_t *ambix, ambix_marker_t *marker) ;
-extern ambix_err_t (*ptr_ambix_add_region) (ambix_t *ambix, ambix_region_t *region) ;
+/* libambix is now linked statically via the vendored submodule;
+ * direct calls to ambix_* are resolved at link time, no runtime dlsym shim. */
 
 extern void (*format_timestr)(double tpos, char *buf, int buflen);
 extern REAPER_PeakBuild_Interface *(*PeakBuild_Create)(PCM_source *src, const char *fn, int srate, int nch);
@@ -89,8 +79,16 @@ typedef struct {
   // adaptor matrix
   uint32_t rows;
   uint32_t cols;
-  // float32_t *data is extra
+  // ---- v2 additions (after the legacy 40-byte header). Discriminated
+  //      from the legacy layout by the total cfgdata length: a legacy
+  //      payload is exactly 40 + rows*cols*sizeof(float32_t) bytes, a v2
+  //      payload is sizeof(AMBIXSINK_CONFIG) + matrix bytes. ----
+  uint32_t version;          // 2 = WavPack-aware
+  uint32_t wavpack_enabled;  // 0 = uncompressed CAF, 1 = WavPack lossless
+  uint32_t reserved[2];      // future-proof, zero-init
+  // float32_t *data follows at offset sizeof(AMBIXSINK_CONFIG)
 } AMBIXSINK_CONFIG;
+static const int AMBIXSINK_LEGACY_HEADER_SIZE = 40; /* sizeof pre-v2 header */
 
 
 void post_matrix(ambix_matrix_t *matrix)
@@ -131,53 +129,69 @@ public:
     m_filesize=0;
     m_fn.Set(fn);
     m_writemarkers = 1;
-    
+    m_wavpack_enabled = true; // default: lossless compression on
+
     m_adapter_matrix = NULL; // this one gets passed
-    
+
     // retrieve settings
-    
+
     if (cfgdata_l >= 32 && *((int *)cfgdata) == SINK_FOURCC)
     {
       AMBIXSINK_CONFIG *pAmbixConfigData = (AMBIXSINK_CONFIG *) cfgdata;
-      
+
       m_wanted_fileformat = pAmbixConfigData->format; // BASIC MEANS NO REDUCTION, EXTENDED MIGHT MEAN WITH OR WITHOUT REDUCTION
-      
+
       m_order = REAPER_MAKELEINT(pAmbixConfigData->order);
       m_sampleformat = REAPER_MAKELEINT(pAmbixConfigData->sampleformat);
-      
+
       if (!m_sampleformat)
         m_sampleformat = AMBIX_SAMPLEFORMAT_PCM24; // default fallback
-      
+
       m_xtrachannels = REAPER_MAKELEINT(pAmbixConfigData->numextrachannels);
-      
+
       m_writemarkers = REAPER_MAKELEINT(pAmbixConfigData->writemarkers);
-      
+
       m_doreduction = (pAmbixConfigData->doreduction > 0) ? true : false; // if true L=(N+1)^2 channels are expected, otherwise C
-      
+
       uint32_t rows = pAmbixConfigData->rows; // has to be L=(N+1)^2
       uint32_t cols = pAmbixConfigData->cols; // has to be C (reduced number of channels)
-      
+
+      // Discriminate v2 (with WavPack flag) from legacy by the exact length:
+      // legacy = 40 + rows*cols*4; v2 = sizeof(AMBIXSINK_CONFIG) + rows*cols*4.
+      const int legacy_payload = AMBIXSINK_LEGACY_HEADER_SIZE
+                                 + (int)(rows * cols * sizeof(float32_t));
+      const bool is_v2 = (cfgdata_l != legacy_payload);
+      int param_offset = is_v2 ? (int)sizeof(AMBIXSINK_CONFIG)
+                               : AMBIXSINK_LEGACY_HEADER_SIZE;
+      if (is_v2 && pAmbixConfigData->version >= 2) {
+        m_wavpack_enabled = (pAmbixConfigData->wavpack_enabled != 0);
+      }
+
       if ((rows > 0) && (cols > 0))
       {
         /* parse the matrix which got passed... */
-        m_adapter_matrix = ptr_ambix_matrix_init(rows, cols, NULL);
-        
-        // mtx data offset in passed configchunk
-        int param_offset = sizeof(AMBIXSINK_CONFIG);
-        // this is the data pointer
+        m_adapter_matrix = ambix_matrix_init(rows, cols, NULL);
+
+        // this is the data pointer (offset depends on legacy vs v2 layout)
         float* mtx_data_passed = (float32_t *)(((char*)cfgdata)+param_offset);
-        
-        ambix_err_t err = ptr_ambix_matrix_fill_data(m_adapter_matrix, mtx_data_passed);
-        
+
+        ambix_err_t err = ambix_matrix_fill_data(m_adapter_matrix, mtx_data_passed);
+
         if (err != AMBIX_ERR_SUCCESS)
           printf("ERROR: Could not read matrix values....\n");
-        
+
         printf("This matrix was passed:\n");
         post_matrix(m_adapter_matrix);
-      
+
       }
-      
+
     } // end retrieve settings
+
+    /* WavPack does not encode float64; quietly downcast to float32. */
+    if (m_wavpack_enabled && m_sampleformat == AMBIX_SAMPLEFORMAT_FLOAT64) {
+      printf("WavPack: float64 not supported, falling back to float32\n");
+      m_sampleformat = AMBIX_SAMPLEFORMAT_FLOAT32;
+    }
     
     // number of ambisonic channels
     uint32_t L = (uint32_t)(m_order+1)*(m_order+1);
@@ -208,8 +222,8 @@ public:
       printf("Init Matrix with L=%d...\n", L);
       
       /* generate matrix of ones in case we have extended format with (N+1)^2 channels, but we miss an adapter matrix */
-      m_adapter_matrix = ptr_ambix_matrix_init(L, L, NULL);
-      m_adapter_matrix = ptr_ambix_matrix_fill(m_adapter_matrix, AMBIX_MATRIX_IDENTITY);
+      m_adapter_matrix = ambix_matrix_init(L, L, NULL);
+      m_adapter_matrix = ambix_matrix_fill(m_adapter_matrix, AMBIX_MATRIX_IDENTITY);
     }
     
     // set the number of ambisonic channels for reading/writing
@@ -275,8 +289,10 @@ public:
     m_ainfo.sampleformat=(ambix_sampleformat_t)m_sampleformat;
     
     m_isopen = false;
-    
-    m_fh=ptr_ambix_open(m_fn.Get(), AMBIX_WRITE, &m_ainfo);
+
+    ambix_filemode_t open_mode = AMBIX_WRITE;
+    if (m_wavpack_enabled) open_mode = (ambix_filemode_t)(open_mode | AMBIX_USE_WAVPACK);
+    m_fh=ambix_open(m_fn.Get(), open_mode, &m_ainfo);
     
     if (!m_fh) {
       printf("Error: Cant't open file!\n");
@@ -289,18 +305,18 @@ public:
     {
       printf("setting adapter matrix...\n");
       // set the adaptor matrix
-      ambix_err_t err = ptr_ambix_set_adaptormatrix(m_fh, m_adapter_matrix);
+      ambix_err_t err = ambix_set_adaptormatrix(m_fh, m_adapter_matrix);
       if(err!=AMBIX_ERR_SUCCESS)
         fprintf(stderr, "setting adapator matrix [%dx%d] returned %d\n", m_adapter_matrix->rows, m_adapter_matrix->cols, err);
         
       // free the adaptor matrix
-      ptr_ambix_matrix_destroy(m_adapter_matrix);
+      ambix_matrix_destroy(m_adapter_matrix);
       
       /*
       // crosscheck the matrix
       const ambix_matrix_t *tempmatrix = NULL;
       
-      tempmatrix=ptr_ambix_get_adaptormatrix(m_fh);
+      tempmatrix=ambix_get_adaptormatrix(m_fh);
       
       
       //post matrix
@@ -329,7 +345,7 @@ public:
     {
       
       
-      ambix_err_t err = ptr_ambix_close(m_fh);
+      ambix_err_t err = ambix_close(m_fh);
       if(err!=AMBIX_ERR_SUCCESS)
         fprintf(stderr, "Error closing file %d\n", err);
       
@@ -344,61 +360,51 @@ public:
     printf("destructor done...\n");
   }
   
-  const char *GetFileName() { return m_fn.Get(); }
-  
-  int GetNumChannels()
+  const char *GetFileName() override { return m_fn.Get(); }
+
+  int GetNumChannels() override
   {
     return m_ambi_out_channels+m_xtrachannels;
   } // return number of channels
-  
-  double GetLength() { return m_lensamples / (double) m_srate; } // length in seconds, so far
-  INT64 GetFileSize()
+
+  double GetLength() override { return m_lensamples / (double) m_srate; } // length in seconds, so far
+  INT64 GetFileSize() override
   {
     return m_filesize;
   }
-  int GetLastSecondPeaks(int sz, ReaSample *buf)
+  int GetLastSecondPeaks(int sz, ReaSample *buf) override
   {
     if (m_peakbuild)
       return m_peakbuild->GetLastSecondPeaks(sz,buf);
     return 0;
   }
-  void GetPeakInfo(PCM_source_peaktransfer_t *block)
+  void GetPeakInfo(PCM_source_peaktransfer_t *block) override
   {
     if (m_peakbuild) m_peakbuild->GetPeakInfo(block);
     else block->peaks_out=0;
   }
-  
-  void GetOutputInfoString(char *buf, int buflen)
+
+  void GetOutputInfoString(char *buf, int buflen) override
   {
-    char ambix_format[20];
-    
+    const char *ambix_format;
+
     switch (m_wanted_fileformat) {
+      case AMBIX_BASIC:    ambix_format = "basic";    break;
+      case AMBIX_EXTENDED: ambix_format = "extended"; break;
       case AMBIX_NONE:
-        sprintf(ambix_format, "error");
-        break;
-        
-      case AMBIX_BASIC:
-        sprintf(ambix_format, "basic");
-        break;
-        
-      case AMBIX_EXTENDED:
-        sprintf(ambix_format, "extended");
-        break;
-        
+      default:             ambix_format = "error";    break;
     }
-    
-    char tmp[512];
-    sprintf(tmp,"Write ambiX %s file: order %d, ambi channels: %d, xtrachannels: %d",
-            ambix_format,
-            m_order,
-            m_ambi_out_channels,
-            m_xtrachannels);
-    
-    strncpy(buf,tmp,buflen);
+
+    snprintf(buf, buflen,
+             "Write ambiX %s file: order %d, ambi channels: %d, xtrachannels: %d",
+             ambix_format,
+             m_order,
+             m_ambi_out_channels,
+             m_xtrachannels);
   }
-  
-  void WriteMIDI(MIDI_eventlist *events, int len, double samplerate) { }
-  void WriteDoubles(ReaSample **samples, int len, int nch, int offset, int spacing)
+
+  void WriteMIDI(MIDI_eventlist *events, int len, double samplerate) override { }
+  void WriteDoubles(ReaSample **samples, int len, int nch, int offset, int spacing) override
   {
     m_lensamples += len;
     // printf("i am writing %d samples, my samples are %d, spacing %d, offset %d \n", len, sizeof(ReaSample), spacing, offset);
@@ -444,7 +450,7 @@ public:
     
     /* in case we don't have to do a reduction we are done now and can write the buffers to the file */
       
-    int sysrtn = ptr_ambix_writef_float64(m_fh,
+    int sysrtn = ambix_writef_float64(m_fh,
                                           ambirawbuf,
                                           xtrabuf,
                                           len);
@@ -522,7 +528,7 @@ public:
                 ((m_writemarkers == 2) && startwithhash) ||
                 ((m_writemarkers == 4) && startwithhash)
                 )
-              ptr_ambix_add_marker(m_fh, &new_marker);
+              ambix_add_marker(m_fh, &new_marker);
           }
         } // end add Single Marker
         else
@@ -542,7 +548,7 @@ public:
                  ((m_writemarkers == 2) && startwithhash) ||
                  ((m_writemarkers == 6) && startwithhash)
                )
-              ptr_ambix_add_region(m_fh, &new_region);
+              ambix_add_region(m_fh, &new_region);
           }
         } // end add Region
       }
@@ -578,6 +584,7 @@ private:
   // 5 "Include Regions only"
   // 6 "Include Regions starting with #"
   int m_writemarkers;
+  bool m_wavpack_enabled;
   
   uint32_t m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels;
   
@@ -665,9 +672,9 @@ static void SetExtrachannelsStr(HWND hwndDlg, const char* txt, int idx)
 /* add entry to extrachannel selection */
 static void setNumChannelsLabel(HWND hwndDlg, int numchannels)
 {
-  char q_text[4];
-  
-  sprintf(q_text, "%d", numchannels);
+  char q_text[8];
+
+  snprintf(q_text, sizeof(q_text), "%d", numchannels);
   
   SetDlgItemText(hwndDlg, IDC_REQINCH_TXT, q_text);
 }
@@ -736,6 +743,157 @@ static void calcNumChannels(HWND hwndDlg)
   
   
   setNumChannelsLabel(hwndDlg, (order+1)*(order+1)+xtrachannels);
+}
+
+/* ---------- Adaptor Matrix review dialog ----------------------------------
+ * Shown when the user clicks "Review Matrix". Renders the currently-selected
+ * adaptor matrix (Full 3D = identity LxL, 2D Circular = adapter_circular,
+ * Upper Hemisphere = adapter_hemi) into a read-only multi-line edit field as
+ * tab-separated values (so a "Copy to Clipboard" round-trips cleanly into a
+ * spreadsheet).
+ */
+struct ReviewMatrixCtx {
+  uint32_t    rows;
+  uint32_t    cols;
+  const float *data;     // row-major, rows*cols floats
+  char        header[256];
+};
+
+/* Format matrix as TSV text. Caller frees the returned buffer. */
+static char *format_matrix_as_tsv(uint32_t rows, uint32_t cols, const float *data)
+{
+  // Each cell: up to ~16 chars ("-1.234567890\t"). Plus trailing \r\n.
+  size_t cap = (size_t)rows * cols * 18 + (size_t)rows * 2 + 64;
+  char *buf = (char *)malloc(cap);
+  if (!buf) return NULL;
+  size_t pos = 0;
+  for (uint32_t r = 0; r < rows; ++r) {
+    for (uint32_t c = 0; c < cols; ++c) {
+      pos += snprintf(buf + pos, cap - pos, "%.10g%s",
+                      (double)data[r * cols + c],
+                      (c + 1 == cols) ? "\r\n" : "\t");
+      if (pos + 32 >= cap) break;
+    }
+  }
+  buf[pos < cap ? pos : cap - 1] = 0;
+  return buf;
+}
+
+static void copy_text_to_clipboard(HWND hwnd, const char *text)
+{
+  if (!text) return;
+  size_t len = strlen(text);
+  if (!OpenClipboard(hwnd)) return;
+  EmptyClipboard();
+
+  /* On both Win32 and SWELL the clipboard HANDLE for CF_TEXT must come
+   * from GlobalAlloc — SWELL's destructor calls GlobalFree(h) which
+   * computes h-sizeof(header), so a bare malloc'd pointer crashes. */
+  HANDLE hg = GlobalAlloc(GMEM_MOVEABLE, (int)(len + 1));
+  if (hg) {
+    char *p = (char *)GlobalLock(hg);
+    if (p) {
+      memcpy(p, text, len);
+      p[len] = 0;
+      GlobalUnlock(hg);
+      SetClipboardData(CF_TEXT, hg);
+    } else {
+      GlobalFree(hg);
+    }
+  }
+  CloseClipboard();
+}
+
+static WDL_DLGRET reviewMatrixDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  switch (uMsg) {
+    case WM_INITDIALOG: {
+      ReviewMatrixCtx *ctx = (ReviewMatrixCtx *)lParam;
+      SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG_PTR)ctx);
+      if (!ctx) return 0;
+
+      SetDlgItemText(hwndDlg, IDC_MATRIX_HEADER, ctx->header);
+      char *tsv = format_matrix_as_tsv(ctx->rows, ctx->cols, ctx->data);
+      if (tsv) {
+        SetDlgItemText(hwndDlg, IDC_MATRIX_TEXTAREA, tsv);
+        free(tsv);
+      }
+      return 1;
+    }
+
+    case WM_COMMAND:
+      if (LOWORD(wParam) == IDC_COPY_MATRIX) {
+        ReviewMatrixCtx *ctx = (ReviewMatrixCtx *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+        if (ctx) {
+          char *tsv = format_matrix_as_tsv(ctx->rows, ctx->cols, ctx->data);
+          if (tsv) {
+            copy_text_to_clipboard(hwndDlg, tsv);
+            free(tsv);
+          }
+        }
+        return 1;
+      }
+      if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+        EndDialog(hwndDlg, LOWORD(wParam));
+        return 1;
+      }
+      break;
+
+    case WM_CLOSE:
+      EndDialog(hwndDlg, IDCANCEL);
+      return 1;
+  }
+  return 0;
+}
+
+/* Build an identity LxL matrix on the heap, returns malloc'd buffer; caller frees. */
+static float *build_identity_matrix(uint32_t L)
+{
+  float *m = (float *)calloc((size_t)L * L, sizeof(float));
+  if (!m) return NULL;
+  for (uint32_t i = 0; i < L; ++i) m[i * L + i] = 1.f;
+  return m;
+}
+
+/* Open the Review Matrix dialog with the matrix currently selected by the
+ * Order + Reduction dropdowns. */
+static void show_review_matrix(HWND parent)
+{
+  uint32_t rows = 0, cols = 0;
+  const float *data = NULL;
+  getAdapterMatrix(parent, rows, cols, data);
+
+  uint32_t order = getCurrentItemData(parent, IDC_AMBI_ORDER);
+  uint32_t reduction_sel = getCurrentItemData(parent, IDC_ADAPTORMATRIX);
+
+  ReviewMatrixCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  float *owned = NULL;
+
+  const char *kind = "Full 3D (Identity)";
+  if (reduction_sel == 1) kind = "2D Circular Reduction";
+  else if (reduction_sel == 2) kind = "Upper Hemisphere Reduction";
+
+  if (rows == 0 || cols == 0 || !data) {
+    /* Full 3D / no reduction: synthesize an identity matrix L = (N+1)^2 */
+    uint32_t L = (order + 1) * (order + 1);
+    owned = build_identity_matrix(L);
+    if (!owned) return;
+    rows = cols = L;
+    data = owned;
+  }
+
+  ctx.rows = rows;
+  ctx.cols = cols;
+  ctx.data = data;
+  snprintf(ctx.header, sizeof(ctx.header),
+           "%s — Order %u — %u x %u (rows = full ambi channels, cols = stored channels)",
+           kind, order, rows, cols);
+
+  DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_ADAPTORMATRIX_DLG),
+                 parent, reviewMatrixDlgProc, (LPARAM)&ctx);
+
+  if (owned) free(owned);
 }
 
 /* depending on the ambix format enable/disable some control elements */
@@ -810,7 +968,11 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
     pAmbixConfigData->doreduction = 1; // set this static for now, might be altered afterwards
     
     pAmbixConfigData->writemarkers = getCurrentItemData(hwndDlg, IDC_WRITEMARKER);
-    
+
+    /* v2 fields: WavPack flag */
+    pAmbixConfigData->version = 2;
+    pAmbixConfigData->wavpack_enabled = IsDlgButtonChecked(hwndDlg, IDC_WAVPACK_ENABLE) ? 1 : 0;
+
     /* AdaptorMatrix */
     
     uint32_t mtx_rows = 0;
@@ -932,21 +1094,32 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, 0, 0);
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, 0, 0);
         SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETCURSEL, 1, 0);
+        /* WavPack lossless compression is on by default */
+        CheckDlgButton(hwndDlg, IDC_WAVPACK_ENABLE, BST_CHECKED);
       }
       
       // parameters have been sent by reaper -> parse them and set gui accordingly
       if (configLen >= sizeof(AMBIXSINK_CONFIG) && *((int *)cfgdata) == SINK_FOURCC)
       {
         AMBIXSINK_CONFIG *pAmbixConfigData = (AMBIXSINK_CONFIG *) cfgdata;
-        
-        
+
+
         SendDlgItemMessage(hwndDlg, IDC_AMBIX_FORMAT, CB_SETCURSEL, pAmbixConfigData->format-1, 0);
         SendDlgItemMessage(hwndDlg, IDC_AMBI_ORDER, CB_SETCURSEL, pAmbixConfigData->order-1, 0);
         SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETCURSEL, pAmbixConfigData->sampleformat-1, 0);
         SendDlgItemMessage(hwndDlg, IDC_EXTRACHANNELS, CB_SETCURSEL, pAmbixConfigData->numextrachannels, 0);
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, pAmbixConfigData->reduction_sel, 0);
         SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETCURSEL, pAmbixConfigData->writemarkers, 0);
-        
+
+        /* v2: restore WavPack checkbox if the saved config has the new fields */
+        const int legacy_payload = AMBIXSINK_LEGACY_HEADER_SIZE
+                                   + (int)(pAmbixConfigData->rows
+                                           * pAmbixConfigData->cols
+                                           * sizeof(float32_t));
+        const bool is_v2 = (configLen != legacy_payload)
+                            && (pAmbixConfigData->version >= 2);
+        CheckDlgButton(hwndDlg, IDC_WAVPACK_ENABLE,
+                       (is_v2 && pAmbixConfigData->wavpack_enabled) ? BST_CHECKED : BST_UNCHECKED);
       }
       
       enableDisableElements(hwndDlg);
@@ -971,15 +1144,15 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       int mtx_rows = mtx_adapter_hemi[order-1].rows;
       int mtx_cols = mtx_adapter_hemi[order-1].cols;
       
-      ambix_matrix_t* mtx = ptr_ambix_matrix_init(mtx_rows, mtx_cols, NULL);
-      ambix_matrix_t* inverse = ptr_ambix_matrix_init(mtx_cols, mtx_rows, NULL);
+      ambix_matrix_t* mtx = ambix_matrix_init(mtx_rows, mtx_cols, NULL);
+      ambix_matrix_t* inverse = ambix_matrix_init(mtx_cols, mtx_rows, NULL);
       
-      ptr_ambix_matrix_fill_data(mtx, adapter_hemi[order-1]);
+      ambix_matrix_fill_data(mtx, adapter_hemi[order-1]);
       
       printf("original:\n");
       post_matrix(mtx);
       
-      inverse = ptr_ambix_matrix_pinv(mtx, inverse);
+      inverse = ambix_matrix_pinv(mtx, inverse);
       if (inverse)
       {
         printf("pseudo inverse:\n");
@@ -988,22 +1161,22 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       */
 //      int mtx_rows = 4;
 //      int mtx_cols = 3;
-//      ambix_matrix_t* mtx = ptr_ambix_matrix_init(mtx_rows, mtx_cols, NULL);
-//      ambix_matrix_t* inverse = ptr_ambix_matrix_init(mtx_cols, mtx_rows, NULL);
+//      ambix_matrix_t* mtx = ambix_matrix_init(mtx_rows, mtx_cols, NULL);
+//      ambix_matrix_t* inverse = ambix_matrix_init(mtx_cols, mtx_rows, NULL);
 //      
-//      // ptr_ambix_matrix_fill(mtx, AMBIX_MATRIX_FUMA);
-//      // ptr_ambix_matrix_fill(mtx, AMBIX_MATRIX_IDENTITY);
+//      // ambix_matrix_fill(mtx, AMBIX_MATRIX_FUMA);
+//      // ambix_matrix_fill(mtx, AMBIX_MATRIX_IDENTITY);
 //      
 //      
 //      
 //      // float32_t data[9] = {1.f, 2.f, 4.f, 2.f, 3.f, 4.f, 3.f, 4.f, 5.f};
 //      float32_t data[12] = {0.750702260800974, 0.0, 0.0, 0.0, 1.0, 0.0, 0.660640685719784, 0.0, 0.0, 0.0, 0.0, 1.0};
-//      ptr_ambix_matrix_fill_data(mtx, data);
+//      ambix_matrix_fill_data(mtx, data);
 //      
 //      printf("original:\n");
 //      post_matrix(mtx);
 //      
-//      inverse = ptr_ambix_matrix_pinv(mtx, inverse);
+//      inverse = ambix_matrix_pinv(mtx, inverse);
 //      if (inverse)
 //      {
 //        printf("pseudo inverse:\n");
@@ -1024,7 +1197,13 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       {
         calcNumChannels(hwndDlg);
       }
-      
+
+      /* Review Matrix button clicked → open the matrix-review modal */
+      if (LOWORD(wParam) == IDC_REVIEWMATRIX && HIWORD(wParam) == BN_CLICKED)
+      {
+        show_review_matrix(hwndDlg);
+      }
+
       break;
     }
       
@@ -1052,7 +1231,7 @@ static HWND ShowConfig(const void *cfg, int cfg_l, HWND parent)
   
   if (cfg_l >= 4 && *((int *)cfg) == SINK_FOURCC)
   {
-    const void *x[2]={cfg,(void *)cfg_l};
+    const void *x[2]={cfg,(void *)(INT_PTR)cfg_l};
     return CreateDialogParam(g_hInst,MAKEINTRESOURCE(IDD_AMBIXSINK_CFG),parent,wavecfgDlgProc,(LPARAM)x);
   }
   
@@ -1064,13 +1243,7 @@ static PCM_sink *CreateSink(const char *filename, void *cfg, int cfg_l, int nch,
 {
   if (cfg_l >= 4 && *((int *)cfg) == SINK_FOURCC)
   {
-    if (ImportLibAmbixFunctions())
-    {
-      printf("could not load libambix\n");
-      // loading libamibx/resolving functions failed
-      return 0;
-    }
-    
+    /* libambix is statically linked via the vendored submodule. */
     PCM_sink_ambix *v=new PCM_sink_ambix(filename,cfg,cfg_l,nch,srate,buildpeaks);
     if (v->IsOpen()) return v;
     delete v;

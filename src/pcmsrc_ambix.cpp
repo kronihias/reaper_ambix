@@ -1,6 +1,5 @@
 #include "reaper_plugin.h"
 
-#include "libambixImport.h"
 #ifdef _WIN32
     #include <windows.h>
 #endif
@@ -103,12 +102,8 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
 #ifdef REAPER_DEBUG_OUTPUT_TRACING
         //ShowConsoleMsg(lsfpath);
 #endif
-        if (ImportLibAmbixFunctions())
-        {
-            // loading libamibx/resolving functions failed
-            printf("Failed to load libambix!\n");
-            return 0;
-        }
+        /* libambix is statically linked via the vendored submodule;
+         * no runtime resolution needed. */
         rec->Register("pcmsrc",&myRegStruct);
       
         if (!rec->Register("pcmsink_ext",&mySinkRegStruct))

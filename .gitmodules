@@ -1,3 +1,9 @@
 [submodule "WDL"]
 	path = WDL
 	url = https://github.com/justinfrankel/WDL.git
+[submodule "WavPack"]
+	path = WavPack
+	url = /Users/matthias/SDKs/WavPack
+[submodule "libambix"]
+	path = libambix
+	url = /Users/matthias/SDKs/libambix

@@ -1,8 +1,14 @@
 #ifndef WRAPPERCLASS_H
 #define WRAPPERCLASS_H
-#include "libambixImport.h"
 #include "reaper_plugin.h"
+#ifdef __clang__
+# pragma clang diagnostic push
+# pragma clang diagnostic ignored "-Wignored-pragmas"
+#endif
 #include <ambix/ambix.h>
+#ifdef __clang__
+# pragma clang diagnostic pop
+#endif
 
 #ifdef _MSC_VER
 #  define snprintf _snprintf

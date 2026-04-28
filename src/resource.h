@@ -45,14 +45,18 @@
 #define IDC_EDIT3                       1019
 #define IDC_CHANNELLAYOUT               1023
 #define IDC_REVIEWMATRIX                1024
+#define IDC_WAVPACK_ENABLE              1025
+#define IDC_MATRIX_HEADER               1026
+#define IDC_MATRIX_TEXTAREA             1027
+#define IDC_COPY_MATRIX                 1028
 
 // Next default values for new objects
-// 
+//
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        105
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1024
+#define _APS_NEXT_CONTROL_VALUE         1029
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

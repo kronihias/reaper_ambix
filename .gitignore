@@ -1,0 +1,23 @@
+# Build trees
+/build/
+/build-dev/
+/_build/
+/_build_win/
+/_OSX_RELEASE/
+/_WIN_RELEASE/
+/libambix/build-cmake/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+CMakeUserPresets.json
+
+# Signing credentials should not be committed.
+# Comment the line below if your repo is private and you want
+# scripts/codesign.env tracked.
+scripts/codesign.env
