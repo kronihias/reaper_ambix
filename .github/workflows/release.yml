@@ -29,13 +29,14 @@ jobs:
       run: |
         choco install innosetup
         
-    - name: Install libsndfile
+    - name: Install libsndfile via vcpkg
       run: |
-        # Download and extract libsndfile
-        curl -L https://github.com/libsndfile/libsndfile/releases/download/1.2.2/libsndfile-1.2.2-win64.zip -o libsndfile.zip
-        7z x libsndfile.zip
-        # Set environment variable for the DLL
-        echo "LIBSNDFILE_DLL=D:\a\reaper_ambix\reaper_ambix\libsndfile-1.2.2-win64\bin\libsndfile-1.dll" >> $env:GITHUB_ENV
+        git clone https://github.com/microsoft/vcpkg.git vcpkg
+        .\vcpkg\bootstrap-vcpkg.bat
+        .\vcpkg\vcpkg.exe install libsndfile:x64-windows
+      shell: cmd
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         
     - name: Setup Windows code signing
       if: env.WINDOWS_CODESIGN_PFX != ''
@@ -63,6 +64,7 @@ jobs:
       shell: cmd
       env:
         WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+        VCPKG_ROOT: ${{ github.workspace }}\vcpkg
         
     - name: Check Windows installer
       run: |

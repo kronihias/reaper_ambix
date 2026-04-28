@@ -79,10 +79,15 @@ REM Configure + build
 REM ============================================================================
 echo.
 echo === Configuring (Visual Studio 2022 x64) ===
+set "CMAKE_TOOLCHAIN_ARGS="
+if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
+    set "CMAKE_TOOLCHAIN_ARGS=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
+)
 cmake -S "%ROOT%" -B "%BUILD_DIR%" ^
       -G "Visual Studio 17 2022" -A x64 ^
       -DCMAKE_BUILD_TYPE=Release ^
-      -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
+      -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF ^
+      %CMAKE_TOOLCHAIN_ARGS%
 if errorlevel 1 exit /b 1
 
 echo.
