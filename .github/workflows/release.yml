@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        
+    - name: Get version
+      id: version
+      run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+      shell: bash
+        
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      
+    - name: Install CMake
+      uses: lukka/get-cmake@latest
+      
+    - name: Install Inno Setup
+      run: |
+        choco install innosetup
+        
+    - name: Install libsndfile
+      run: |
+        # Download and extract libsndfile
+        curl -L https://github.com/libsndfile/libsndfile/releases/download/1.2.2/libsndfile-1.2.2-win64.zip -o libsndfile.zip
+        7z x libsndfile.zip
+        # Set environment variable for the DLL
+        echo "LIBSNDFILE_DLL=D:\a\reaper_ambix\reaper_ambix\libsndfile-1.2.2-win64\bin\libsndfile-1.dll" >> $env:GITHUB_ENV
+        
+    - name: Setup Windows code signing
+      if: env.WINDOWS_CODESIGN_PFX != ''
+      run: |
+        # Create codesign.env file for Windows signing
+        @"
+        WINDOWS_CODESIGN_SUBJECT=${env:WINDOWS_CODESIGN_SUBJECT}
+        WINDOWS_CODESIGN_PFX=${env:WINDOWS_CODESIGN_PFX}
+        WINDOWS_CODESIGN_PFX_PASSWORD=${env:WINDOWS_CODESIGN_PFX_PASSWORD}
+        "@ | Out-File -FilePath scripts/codesign.env -Encoding ASCII
+      shell: pwsh
+      env:
+        WINDOWS_CODESIGN_SUBJECT: ${{ secrets.WINDOWS_CODESIGN_SUBJECT }}
+        WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+        WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        
+    - name: Build Windows installer
+      run: |
+        cd scripts
+        if "%WINDOWS_CODESIGN_PFX%"=="" (
+          .\build_win.bat --no-sign
+        ) else (
+          .\build_win.bat
+        )
+      env:
+        WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+        
+    - name: Check Windows installer
+      run: |
+        if not exist ".\_WIN_RELEASE\reaper_ambix_v${{ steps.version.outputs.version }}_win64_setup.exe" (
+          echo Windows installer not found
+          exit /b 1
+        )
+      shell: cmd
+        
+    - name: Upload Windows installer
+      run: gh release upload ${{ github.event.release.tag_name }} ./_WIN_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_win64_setup.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        
+    - name: Get version
+      id: version
+      run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+        
+    - name: Install dependencies
+      run: |
+        brew install libsndfile cmake
+        
+    - name: Setup code signing
+      if: env.CODESIGN_CERTIFICATE_P12 != ''
+      run: |
+        # Create keychain
+        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+        security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+        security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+        
+        # Import certificate
+        echo "$CODESIGN_CERTIFICATE_P12" | base64 --decode > certificate.p12
+        security import certificate.p12 -P "$CODESIGN_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+        security list-keychain -d user -s $KEYCHAIN_PATH
+        
+        # Create codesign.env file
+        cat > scripts/codesign.env << EOF
+        CODESIGN_APP="$CODESIGN_APP"
+        CODESIGN_INSTALLER="$CODESIGN_INSTALLER"
+        NOTARIZE_APPLE_ID="$NOTARIZE_APPLE_ID"
+        NOTARIZE_PASSWORD="$NOTARIZE_PASSWORD"
+        NOTARIZE_TEAM_ID="$NOTARIZE_TEAM_ID"
+        EOF
+      env:
+        KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        CODESIGN_CERTIFICATE_P12: ${{ secrets.CODESIGN_CERTIFICATE_P12 }}
+        CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+        CODESIGN_APP: ${{ secrets.CODESIGN_APP }}
+        CODESIGN_INSTALLER: ${{ secrets.CODESIGN_INSTALLER }}
+        NOTARIZE_APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
+        NOTARIZE_PASSWORD: ${{ secrets.NOTARIZE_PASSWORD }}
+        NOTARIZE_TEAM_ID: ${{ secrets.NOTARIZE_TEAM_ID }}
+        
+    - name: Build macOS installer
+      run: |
+        cd scripts
+        if [ -n "$CODESIGN_CERTIFICATE_P12" ]; then
+          ./build_osx.sh
+        else
+          ./build_osx.sh --no-sign
+        fi
+      env:
+        CODESIGN_CERTIFICATE_P12: ${{ secrets.CODESIGN_CERTIFICATE_P12 }}
+        
+    - name: Check macOS installer
+      run: |
+        if [ ! -f "./_OSX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_macos.pkg" ]; then
+          echo "macOS installer not found"
+          exit 1
+        fi
+        
+    - name: Upload macOS installer
+      run: gh release upload ${{ github.event.release.tag_name }} ./_OSX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_macos.pkg
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

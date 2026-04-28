@@ -20,6 +20,15 @@ binaries:
 ready to use 32/64 bit binaries for Windows and MacOS can be found at:
 http://www.matthiaskronlachner.com
 
+**GitHub Releases:**
+Signed installers for Windows (.exe) and macOS (.pkg) are automatically built and available in [GitHub Releases](https://github.com/kronihias/reaper_ambix/releases).
+
+The automated build process creates:
+- Windows: Inno Setup installer with bundled libsndfile
+- macOS: Signed and notarized .pkg installer with bundled dependencies
+
+See [.github/CODE_SIGNING.md](.github/CODE_SIGNING.md) for code signing setup details.
+
 
 building yourself
 --------------
@@ -30,7 +39,7 @@ building yourself
 
 authors
 -----------
-2014-2016 Matthias Kronlachner
+2014-2026 Matthias Kronlachner
 
 Contact:
 m.kronlachner (ät) gmail.com
