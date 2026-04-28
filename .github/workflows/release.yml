@@ -35,14 +35,25 @@ jobs:
       run: |
         choco install innosetup
         
-    - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v11
-      
-    - name: Install libsndfile
-      uses: lukka/run-vcpkg@v11
-      with:
-        vcpkgArguments: 'libsndfile'
-        vcpkgTriplet: 'x64-windows'
+    - name: Install libsndfile via vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git vcpkg
+        call "%CD%\vcpkg\bootstrap-vcpkg.bat"
+        call "%CD%\vcpkg\vcpkg.exe" install libsndfile:x64-windows
+      shell: cmd
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        VCPKG_DEFAULT_TRIPLET: x64-windows
+        
+    - name: Debug vcpkg install directory
+      run: |
+        echo VCPKG_ROOT=%VCPKG_ROOT%
+        dir "%VCPKG_ROOT%" /AD
+        dir "%VCPKG_ROOT%\installed" /AD
+        dir "%VCPKG_ROOT%\installed\x64-windows\include" /B || echo include folder missing
+      shell: cmd
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         
     - name: Verify libsndfile installation
       run: |
@@ -56,6 +67,8 @@ jobs:
         )
         echo libsndfile installed successfully
       shell: cmd
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         
     - name: Setup Windows code signing
       if: env.WINDOWS_CODESIGN_PFX != ''
@@ -83,7 +96,7 @@ jobs:
       shell: cmd
       env:
         WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
-        VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         
     - name: Check Windows installer
       run: |
