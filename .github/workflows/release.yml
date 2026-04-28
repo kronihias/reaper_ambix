@@ -38,6 +38,19 @@ jobs:
         vcpkgArguments: 'libsndfile'
         vcpkgTriplet: 'x64-windows'
         
+    - name: Verify libsndfile installation
+      run: |
+        if not exist "%VCPKG_ROOT%\installed\x64-windows\include\sndfile.h" (
+          echo libsndfile headers not found
+          exit /b 1
+        )
+        if not exist "%VCPKG_ROOT%\installed\x64-windows\lib\sndfile.lib" (
+          echo libsndfile library not found
+          exit /b 1
+        )
+        echo libsndfile installed successfully
+      shell: cmd
+        
     - name: Setup Windows code signing
       if: env.WINDOWS_CODESIGN_PFX != ''
       run: |
