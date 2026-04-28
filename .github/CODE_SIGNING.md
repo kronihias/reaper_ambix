@@ -31,6 +31,8 @@ Add each secret listed below:
 - `CODESIGN_INSTALLER`: Use your **Developer ID Installer** certificate name here
 
 > Note: `CODESIGN_CERTIFICATE_P12` is the actual base64-encoded `.p12` file payload. `CODESIGN_APP` and `CODESIGN_INSTALLER` are just the certificate identity names used by the signing commands, not separate base64 secrets.
+>
+> The imported `.p12` must contain both identities (Developer ID Application and Developer ID Installer), or at least the private keys for both certificates. The workflow uses `CODESIGN_APP` to sign the plugin and `CODESIGN_INSTALLER` to sign the package.
 
 ### Windows Certificate Secrets
 - `WINDOWS_CODESIGN_SUBJECT`: Certificate subject name (e.g., "Your Name")
@@ -119,6 +121,42 @@ Developer ID certificates must include the private key to be usable for code sig
 
 - **macOS**: If certificate secrets are configured → signed + notarized installers; otherwise → unsigned installers
 - **Windows**: If certificate secrets are configured → signed installers; otherwise → unsigned installers
+
+## How to Publish a Release
+
+1. **Update VERSION file** with your new version number (e.g., `0.1.1`)
+2. **Commit and push** the VERSION change
+3. **Create a GitHub release**:
+   - Go to your repo → **Releases** → **Create a new release**
+   - **Tag version**: `v0.1.1` (must match VERSION file)
+   - **Release title**: `Version 0.1.1`
+   - **Description**: Release notes
+   - **Publish release** (not just save draft)
+
+4. **GitHub Actions will automatically**:
+   - Build signed Windows + macOS installers
+   - Upload them as release assets
+
+### Important Notes
+- The release tag must match the VERSION file (without the 'v' prefix in VERSION)
+- Publishing the release triggers the workflow - not just pushing code
+- You can create draft releases first to test without triggering builds
+
+## Debugging Certificate Issues
+
+If you get "The specified item could not be found in the keychain":
+
+1. **Check your secrets are set** - All macOS secrets must be configured
+2. **Verify certificate names** - Use exact names from `security find-identity -v -p codesigning`
+3. **Test locally first** - Run the build script locally with your certificates
+4. **Check keychain import** - The workflow imports your `.p12` into a temporary keychain
+
+**Example secrets for your certificates:**
+- `CODESIGN_APP`: `Developer ID Application: Matthias Kronlachner (W52ZCCWU2C)`
+- `CODESIGN_INSTALLER`: `Developer ID Installer: Matthias Kronlachner (W52ZCCWU2C)`
+
+### Temporary Workaround
+If signing fails, the workflow falls back to unsigned builds. Remove the signing secrets to force unsigned builds until certificates are working.
 
 ## Security Notes
 

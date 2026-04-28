@@ -60,6 +60,7 @@ jobs:
         ) else (
           .\build_win.bat
         )
+      shell: cmd
       env:
         WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
         

@@ -23,9 +23,11 @@ http://www.matthiaskronlachner.com
 **GitHub Releases:**
 Signed installers for Windows (.exe) and macOS (.pkg) are automatically built and available in [GitHub Releases](https://github.com/kronihias/reaper_ambix/releases).
 
-The automated build process creates:
-- Windows: Inno Setup installer with bundled libsndfile
-- macOS: Signed and notarized .pkg installer with bundled dependencies
+To create a new release:
+1. Update the `VERSION` file with the new version number
+2. Commit and push the change
+3. Create a GitHub release with tag `vX.Y.Z` (matching VERSION)
+4. Publish the release to trigger automated builds
 
 See [.github/CODE_SIGNING.md](.github/CODE_SIGNING.md) for code signing setup details.
 
