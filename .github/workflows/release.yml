@@ -29,14 +29,14 @@ jobs:
       run: |
         choco install innosetup
         
-    - name: Install libsndfile via vcpkg
-      run: |
-        git clone https://github.com/microsoft/vcpkg.git vcpkg
-        .\vcpkg\bootstrap-vcpkg.bat
-        .\vcpkg\vcpkg.exe install libsndfile:x64-windows
-      shell: cmd
-      env:
-        VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      
+    - name: Install libsndfile
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgArguments: 'libsndfile'
+        vcpkgTriplet: 'x64-windows'
         
     - name: Setup Windows code signing
       if: env.WINDOWS_CODESIGN_PFX != ''
