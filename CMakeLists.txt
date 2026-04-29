@@ -122,6 +122,7 @@ if(NOT MSVC)
 else()
     # Disable MSVC warnings about double to float truncation in matrix literals
     target_compile_options(reaper_ambix PRIVATE /wd4305)
+    target_compile_definitions(reaper_ambix PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # vendored libambix (statically linked, in turn pulls in vendored WavPack

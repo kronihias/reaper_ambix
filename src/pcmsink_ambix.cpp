@@ -28,11 +28,6 @@
 #include "adaptermatrices/adapter_hemi.h"
 #include "adaptermatrices/adapter_circular.h"
 
-#ifdef _MSC_VER
-# define snprintf _snprintf
-#endif /* _MSC_VER */
-
-
 // short for AMbixSInk
 #define SINK_FOURCC REAPER_FOURCC('a','m','s','i')
 

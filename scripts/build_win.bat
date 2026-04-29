@@ -51,7 +51,7 @@ if "%SKIP_SIGN%"=="0" (
         echo Error: scripts\codesign.env not found.
         exit /b 1
     )
-    for /f "tokens=1,* delims==" %%A in (%ROOT%\scripts\codesign.env) do (
+    for /f "tokens=1,* delims==" %%A in ("%ROOT%\scripts\codesign.env") do (
         set "_K=%%A"
         set "_V=%%B"
         REM strip surrounding quotes from value
@@ -80,8 +80,10 @@ REM ============================================================================
 echo.
 echo === Configuring (Visual Studio 2022 x64) ===
 set "CMAKE_TOOLCHAIN_ARGS="
-if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
-    set "CMAKE_TOOLCHAIN_ARGS=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
+if defined VCPKG_ROOT (
+    if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
+        set "CMAKE_TOOLCHAIN_ARGS=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
+    )
 )
 cmake -S "%ROOT%" -B "%BUILD_DIR%" ^
       -G "Visual Studio 17 2022" -A x64 ^
@@ -111,7 +113,9 @@ REM ============================================================================
 REM Locate libsndfile.dll for bundling
 REM ============================================================================
 set "LIBSNDFILE_FOUND="
-if defined LIBSNDFILE_DLL if exist "%LIBSNDFILE_DLL%" set "LIBSNDFILE_FOUND=%LIBSNDFILE_DLL%"
+if defined LIBSNDFILE_DLL (
+    if exist "%LIBSNDFILE_DLL%" set "LIBSNDFILE_FOUND=%LIBSNDFILE_DLL%"
+)
 
 if not defined LIBSNDFILE_FOUND (
     for %%P in (
