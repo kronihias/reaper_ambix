@@ -175,19 +175,16 @@ if not exist "%ISS%" (
 )
 
 REM Find ISCC.exe
-set ISCC=
-for %%P in (
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-    "C:\Program Files\Inno Setup 6\ISCC.exe"
-) do (
-    if exist %%P set "ISCC=%%~P"
-)
-where iscc >nul 2>nul && set "ISCC=iscc"
-
-if not defined ISCC (
-    echo Error: ISCC.exe (Inno Setup) not found. Install Inno Setup 6.
-    exit /b 1
-)
+set "ISCC="
+if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
+if defined ISCC goto iscc_found
+where iscc >nul 2>nul
+if not errorlevel 1 set "ISCC=iscc"
+if defined ISCC goto iscc_found
+echo Error: ISCC.exe not found. Install Inno Setup 6.
+exit /b 1
+:iscc_found
 
 echo.
 echo === Compiling installer (Inno Setup) ===

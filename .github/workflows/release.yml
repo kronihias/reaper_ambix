@@ -13,7 +13,11 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    
+    env:
+      WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+      WINDOWS_CODESIGN_SUBJECT: ${{ secrets.WINDOWS_CODESIGN_SUBJECT }}
+      WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -73,29 +77,29 @@ jobs:
     - name: Setup Windows code signing
       if: env.WINDOWS_CODESIGN_PFX != ''
       run: |
-        # Create codesign.env file for Windows signing
         @"
         WINDOWS_CODESIGN_SUBJECT=${env:WINDOWS_CODESIGN_SUBJECT}
         WINDOWS_CODESIGN_PFX=${env:WINDOWS_CODESIGN_PFX}
         WINDOWS_CODESIGN_PFX_PASSWORD=${env:WINDOWS_CODESIGN_PFX_PASSWORD}
         "@ | Out-File -FilePath scripts/codesign.env -Encoding ASCII
       shell: pwsh
-      env:
-        WINDOWS_CODESIGN_SUBJECT: ${{ secrets.WINDOWS_CODESIGN_SUBJECT }}
-        WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
-        WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
-        
-    - name: Build Windows installer
+
+    - name: Build Windows installer (unsigned)
+      if: env.WINDOWS_CODESIGN_PFX == ''
       run: |
         cd scripts
-        if "%WINDOWS_CODESIGN_PFX%"=="" (
-          .\build_win.bat --no-sign
-        ) else (
-          .\build_win.bat
-        )
+        .\build_win.bat --no-sign
       shell: cmd
       env:
-        WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+    - name: Build Windows installer (signed)
+      if: env.WINDOWS_CODESIGN_PFX != ''
+      run: |
+        cd scripts
+        .\build_win.bat
+      shell: cmd
+      env:
         VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         
     - name: Check Windows installer
