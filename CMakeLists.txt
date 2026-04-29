@@ -119,6 +119,9 @@ if(NOT MSVC)
     target_compile_options(reaper_ambix PRIVATE
         -Wno-error=c++11-narrowing
     )
+else()
+    # Disable MSVC warnings about double to float truncation in matrix literals
+    target_compile_options(reaper_ambix PRIVATE /wd4305)
 endif()
 
 # vendored libambix (statically linked, in turn pulls in vendored WavPack
