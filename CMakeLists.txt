@@ -125,5 +125,8 @@ endif()
 # + system libsndfile via libambix's own CMakeLists)
 target_link_libraries (reaper_ambix ambix wavpack)
 
+# Since we're linking libambix statically, define AMBIX_STATIC to avoid dllimport
+target_compile_definitions(reaper_ambix PRIVATE AMBIX_STATIC)
+
 
 
