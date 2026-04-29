@@ -115,9 +115,11 @@ IF(APPLE)
 ENDIF(APPLE)
 
 
-target_compile_options(reaper_ambix PRIVATE
-    -Wno-error=c++11-narrowing
-)
+if(NOT MSVC)
+    target_compile_options(reaper_ambix PRIVATE
+        -Wno-error=c++11-narrowing
+    )
+endif()
 
 # vendored libambix (statically linked, in turn pulls in vendored WavPack
 # + system libsndfile via libambix's own CMakeLists)
