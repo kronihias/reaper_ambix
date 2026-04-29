@@ -1,4 +1,6 @@
 #include "wrapperclass.h"
+#include <cstdio>
+#include <cstring>
 
 /* libambix is statically linked; ambix_* symbols come from <ambix/ambix.h>. */
 
