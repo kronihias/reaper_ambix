@@ -46,27 +46,23 @@ goto parse_args
 :args_done
 
 REM -- load credentials env (cmd-style) by re-reading the bash one
-if "%SKIP_SIGN%"=="0" (
-    if not exist "%ROOT%\scripts\codesign.env" (
-        echo Error: scripts\codesign.env not found.
-        exit /b 1
-    )
-    for /f "tokens=1,* delims==" %%A in ("%ROOT%\scripts\codesign.env") do (
-        set "_K=%%A"
-        set "_V=%%B"
-        REM strip surrounding quotes from value
-        if defined _V (
-            set "_V=!_V:"=!"
-        )
-        set "_K=!_K: =!"
-        REM only set the WINDOWS_* keys we care about
-        if /I "!_K!"=="WINDOWS_CODESIGN_SUBJECT" set "WINDOWS_CODESIGN_SUBJECT=!_V!"
-        if /I "!_K!"=="WINDOWS_CODESIGN_PFX" set "WINDOWS_CODESIGN_PFX=!_V!"
-        if /I "!_K!"=="WINDOWS_CODESIGN_PFX_PASSWORD" set "WINDOWS_CODESIGN_PFX_PASSWORD=!_V!"
-        if /I "!_K!"=="WINDOWS_TIMESTAMP_URL" set "WINDOWS_TIMESTAMP_URL=!_V!"
-    )
-    if "!WINDOWS_TIMESTAMP_URL!"=="" set "WINDOWS_TIMESTAMP_URL=http://timestamp.digicert.com"
+if "%SKIP_SIGN%"=="1" goto skip_load_creds
+if not exist "%ROOT%\scripts\codesign.env" (
+    echo Error: scripts\codesign.env not found.
+    exit /b 1
 )
+for /f "usebackq tokens=1,* delims==" %%A in ("%ROOT%\scripts\codesign.env") do (
+    set "_K=%%A"
+    set "_V=%%B"
+    if defined _V set "_V=!_V:"=!"
+    set "_K=!_K: =!"
+    if /I "!_K!"=="WINDOWS_CODESIGN_SUBJECT" set "WINDOWS_CODESIGN_SUBJECT=!_V!"
+    if /I "!_K!"=="WINDOWS_CODESIGN_PFX" set "WINDOWS_CODESIGN_PFX=!_V!"
+    if /I "!_K!"=="WINDOWS_CODESIGN_PFX_PASSWORD" set "WINDOWS_CODESIGN_PFX_PASSWORD=!_V!"
+    if /I "!_K!"=="WINDOWS_TIMESTAMP_URL" set "WINDOWS_TIMESTAMP_URL=!_V!"
+)
+if "!WINDOWS_TIMESTAMP_URL!"=="" set "WINDOWS_TIMESTAMP_URL=http://timestamp.digicert.com"
+:skip_load_creds
 
 REM -- clean
 if exist "%BUILD_DIR%" rmdir /S /Q "%BUILD_DIR%"
@@ -148,27 +144,26 @@ copy /Y "%LIBSNDFILE_FOUND%" "%INSTALL_PARENT%\%LIBS_SUBDIR%\" >nul
 REM ============================================================================
 REM Codesign
 REM ============================================================================
-if "%SKIP_SIGN%"=="0" (
-    echo.
-    echo === Codesigning DLLs ===
-    set SIGN_ARGS=/fd SHA256 /td SHA256 /tr "!WINDOWS_TIMESTAMP_URL!"
-    if not "!WINDOWS_CODESIGN_PFX!"=="" (
-        set SIGN_ARGS=!SIGN_ARGS! /f "!WINDOWS_CODESIGN_PFX!"
-        if not "!WINDOWS_CODESIGN_PFX_PASSWORD!"=="" (
-            set SIGN_ARGS=!SIGN_ARGS! /p "!WINDOWS_CODESIGN_PFX_PASSWORD!"
-        )
-    ) else (
-        set SIGN_ARGS=!SIGN_ARGS! /a /n "!WINDOWS_CODESIGN_SUBJECT!"
-    )
-    for %%F in ("%INSTALL_PARENT%\reaper_ambix.dll" "%INSTALL_PARENT%\%LIBS_SUBDIR%\*.dll") do (
-        echo signing %%F
-        signtool sign !SIGN_ARGS! "%%~F"
-        if errorlevel 1 (
-            echo Error: signtool failed on %%F
-            exit /b 1
-        )
+if "%SKIP_SIGN%"=="1" goto skip_codesign_dlls
+echo.
+echo === Codesigning DLLs ===
+set SIGN_ARGS=/fd SHA256 /td SHA256 /tr "!WINDOWS_TIMESTAMP_URL!"
+if not "!WINDOWS_CODESIGN_PFX!"=="" goto sign_with_pfx
+set SIGN_ARGS=!SIGN_ARGS! /a /n "!WINDOWS_CODESIGN_SUBJECT!"
+goto sign_dlls
+:sign_with_pfx
+set SIGN_ARGS=!SIGN_ARGS! /f "!WINDOWS_CODESIGN_PFX!"
+if not "!WINDOWS_CODESIGN_PFX_PASSWORD!"=="" set SIGN_ARGS=!SIGN_ARGS! /p "!WINDOWS_CODESIGN_PFX_PASSWORD!"
+:sign_dlls
+for %%F in ("%INSTALL_PARENT%\reaper_ambix.dll" "%INSTALL_PARENT%\%LIBS_SUBDIR%\*.dll") do (
+    echo signing %%F
+    signtool sign !SIGN_ARGS! "%%~F"
+    if errorlevel 1 (
+        echo Error: signtool failed on %%F
+        exit /b 1
     )
 )
+:skip_codesign_dlls
 
 REM ============================================================================
 REM Inno Setup compile
@@ -208,13 +203,14 @@ set INSTALLER=%RELEASE_DIR%\reaper_ambix_v%VERSION%_win64_setup.exe
 REM ============================================================================
 REM Codesign installer itself
 REM ============================================================================
-if "%SKIP_SIGN%"=="0" if exist "%INSTALLER%" (
-    echo.
-    echo === Codesigning installer ===
-    signtool sign !SIGN_ARGS! "%INSTALLER%"
-    if errorlevel 1 exit /b 1
-    signtool verify /pa "%INSTALLER%"
-)
+if "%SKIP_SIGN%"=="1" goto skip_codesign_installer
+if not exist "%INSTALLER%" goto skip_codesign_installer
+echo.
+echo === Codesigning installer ===
+signtool sign !SIGN_ARGS! "%INSTALLER%"
+if errorlevel 1 exit /b 1
+signtool verify /pa "%INSTALLER%"
+:skip_codesign_installer
 
 echo.
 echo Done!
