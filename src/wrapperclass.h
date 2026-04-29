@@ -10,10 +10,6 @@
 # pragma clang diagnostic pop
 #endif
 
-#ifdef _MSC_VER
-#  define snprintf _snprintf
-#endif
-
 class LSFW_SimpleMediaDecoder : public ISimpleMediaDecoder
 {
 public:
