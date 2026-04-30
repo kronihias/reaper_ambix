@@ -7,9 +7,6 @@ REM
 REM  Prereqs (all optional but the obvious ones are required for a real build):
 REM    - Visual Studio 2022 (with "Desktop development with C++" workload)
 REM    - CMake 3.20+ on PATH
-REM    - libsndfile.dll on PATH or in one of the common install locations
-REM      (vcpkg installed/x64-windows/bin, Mega-Nerd, ...). Override with
-REM      LIBSNDFILE_DLL env var to a full path if auto-detection misses it.
 REM    - Inno Setup 6 ("ISCC.exe" on PATH or in default Program Files dir)
 REM    - signtool.exe (Windows SDK) for codesigning
 REM
@@ -17,7 +14,7 @@ REM  Output:
 REM    _WIN_RELEASE\reaper_ambix_vX.Y.Z_win64_setup.exe -- signed installer
 REM    that drops:
 REM      %APPDATA%\REAPER\UserPlugins\reaper_ambix.dll
-REM      %APPDATA%\REAPER\UserPlugins\reaper_ambix-libs\libsndfile.dll
+REM    (statically linked: libambix + WavPack + WDL — no external deps)
 REM ============================================================================
 
 setlocal EnableExtensions EnableDelayedExpansion
@@ -75,17 +72,14 @@ REM Configure + build
 REM ============================================================================
 echo.
 echo === Configuring (Visual Studio 2022 x64) ===
-set "CMAKE_TOOLCHAIN_ARGS="
-if defined VCPKG_ROOT (
-    if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
-        set "CMAKE_TOOLCHAIN_ARGS=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
-    )
-)
+REM No vcpkg / external toolchain needed: libambix and WavPack are vendored
+REM and statically linked. (We deliberately ignore VCPKG_ROOT — VS 2022 sets it
+REM to a Program Files path whose embedded space breaks unquoted command-line
+REM expansion.)
 cmake -S "%ROOT%" -B "%BUILD_DIR%" ^
       -G "Visual Studio 17 2022" -A x64 ^
       -DCMAKE_BUILD_TYPE=Release ^
-      -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF ^
-      %CMAKE_TOOLCHAIN_ARGS%
+      -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
 if errorlevel 1 exit /b 1
 
 echo.
@@ -106,40 +100,12 @@ if not exist "%PLUGIN_BUILT%" (
 echo Built plugin: %PLUGIN_BUILT%
 
 REM ============================================================================
-REM Locate libsndfile.dll for bundling
-REM ============================================================================
-set "LIBSNDFILE_FOUND="
-if defined LIBSNDFILE_DLL (
-    if exist "%LIBSNDFILE_DLL%" set "LIBSNDFILE_FOUND=%LIBSNDFILE_DLL%"
-)
-
-if not defined LIBSNDFILE_FOUND (
-    for %%P in (
-        "%VCPKG_ROOT%\installed\x64-windows\bin\sndfile.dll"
-        "%VCPKG_ROOT%\installed\x64-windows\bin\libsndfile-1.dll"
-        "C:\vcpkg\installed\x64-windows\bin\sndfile.dll"
-        "C:\vcpkg\installed\x64-windows\bin\libsndfile-1.dll"
-        "C:\Program Files\Mega-Nerd\libsndfile\bin\libsndfile-1.dll"
-    ) do (
-        if exist %%P set "LIBSNDFILE_FOUND=%%~P"
-    )
-)
-
-if not defined LIBSNDFILE_FOUND (
-    echo Error: libsndfile.dll not found. Set LIBSNDFILE_DLL=full\path\to\libsndfile.dll
-    exit /b 1
-)
-echo libsndfile.dll: %LIBSNDFILE_FOUND%
-
-REM ============================================================================
 REM Stage payload
 REM ============================================================================
 set INSTALL_PARENT=%STAGE_DIR%\REAPER\UserPlugins
-set LIBS_SUBDIR=reaper_ambix-libs
-mkdir "%INSTALL_PARENT%\%LIBS_SUBDIR%"
+mkdir "%INSTALL_PARENT%"
 
 copy /Y "%PLUGIN_BUILT%" "%INSTALL_PARENT%\reaper_ambix.dll" >nul
-copy /Y "%LIBSNDFILE_FOUND%" "%INSTALL_PARENT%\%LIBS_SUBDIR%\" >nul
 
 REM ============================================================================
 REM Codesign
@@ -155,7 +121,7 @@ goto sign_dlls
 set SIGN_ARGS=!SIGN_ARGS! /f "!WINDOWS_CODESIGN_PFX!"
 if not "!WINDOWS_CODESIGN_PFX_PASSWORD!"=="" set SIGN_ARGS=!SIGN_ARGS! /p "!WINDOWS_CODESIGN_PFX_PASSWORD!"
 :sign_dlls
-for %%F in ("%INSTALL_PARENT%\reaper_ambix.dll" "%INSTALL_PARENT%\%LIBS_SUBDIR%\*.dll") do (
+for %%F in ("%INSTALL_PARENT%\reaper_ambix.dll") do (
     echo signing %%F
     signtool sign !SIGN_ARGS! "%%~F"
     if errorlevel 1 (

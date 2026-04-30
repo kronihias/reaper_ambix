@@ -260,20 +260,29 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
       snprintf(matrix, 20, "yes [%dx%d]", m_matrix->cols, m_matrix->rows);
     else
       snprintf(matrix, 20, "no");
-    
+
+    const char *container_str = "unknown";
+    switch (ambix_get_container(m_fh)) {
+      case AMBIX_CONTAINER_CAF:     container_str = "CAF";     break;
+      case AMBIX_CONTAINER_WAVPACK: container_str = "WavPack"; break;
+      case AMBIX_CONTAINER_NONE:
+      default:                      container_str = "unknown"; break;
+    }
+
     snprintf(temp, 4096, "Length: %s:\r\n"
             "Samplerate: %.0f\r\n"
             "Bits/sample: %d\r\n"
+            "Container: %s\r\n"
             "\nFormat: %s\r\n"
             "Ambisonic Order: %d\r\n"
             "Ambisonic Channels Stored: %d\r\n"
             "Ambisonic Channels Retrieved: %d\r\n"
             "Adapter Matrix embedded: %s\r\n"
             "Extra Channels: %d\r\n"
-            
+
             "\nreaper_ambix read support by Matthias Kronlachner\nwww.matthiaskronlachner.com\n"
             "based on libambix by IOhannes m zmölnig\nInstitute of Electronic Music and Acoustics Graz (IEM)\nwww.iem.at",
-            lengthbuf, m_srate, m_bps, ambix_format, m_order, m_ambi_in_channels, m_ambi_out_channels, matrix, m_xtrachannels);
+            lengthbuf, m_srate, m_bps, container_str, ambix_format, m_order, m_ambi_in_channels, m_ambi_out_channels, matrix, m_xtrachannels);
     
     strncpy(buf,temp,buflen);
   } else

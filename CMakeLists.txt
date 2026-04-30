@@ -103,15 +103,6 @@ SET_TARGET_PROPERTIES(reaper_ambix PROPERTIES PREFIX "")
 
 IF(APPLE)
 	target_link_libraries (reaper_ambix ${COCOA_LIBRARY} ${CARBON_LIBRARY})
-	# libsndfile is the only remaining dynamic dependency. Its install_name is
-	# @rpath/libsndfile.1.dylib, so the loaded plugin needs LC_RPATH entries
-	# pointing at where libsndfile actually lives (Homebrew on Apple Silicon
-	# vs Intel, /usr/local fallback).
-	set_target_properties(reaper_ambix PROPERTIES
-		INSTALL_RPATH "/opt/homebrew/opt/libsndfile/lib;/opt/homebrew/lib;/usr/local/opt/libsndfile/lib;/usr/local/lib"
-		BUILD_WITH_INSTALL_RPATH TRUE
-		MACOSX_RPATH TRUE
-	)
 ENDIF(APPLE)
 
 
@@ -125,8 +116,7 @@ else()
     target_compile_definitions(reaper_ambix PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# vendored libambix (statically linked, in turn pulls in vendored WavPack
-# + system libsndfile via libambix's own CMakeLists)
+# vendored libambix (statically linked, in turn pulls in vendored WavPack)
 target_link_libraries (reaper_ambix ambix wavpack)
 
 # Since we're linking libambix statically, define AMBIX_STATIC to avoid dllimport

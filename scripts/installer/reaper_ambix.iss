@@ -45,23 +45,18 @@ LicenseFile={#SourcePath}\..\..\COPYING
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; Plugin DLL goes directly into REAPER\UserPlugins
+; Plugin DLL goes directly into REAPER\UserPlugins. Statically linked
+; (libambix + WavPack + WDL) — no runtime deps to bundle alongside it.
 Source: "{#ReaperAmbixStageDir}\reaper_ambix.dll"; \
     DestDir: "{app}"; Flags: ignoreversion
-
-; Bundled runtime libs (libsndfile + recursive deps) go in a sibling subdir
-; that the plugin loads from via its embedded import-table or LoadLibrary
-; lookup path (we rely on the plugin's directory being on Reaper's DLL
-; search path).
-Source: "{#ReaperAmbixStageDir}\reaper_ambix-libs\*"; \
-    DestDir: "{app}\reaper_ambix-libs"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 
 [Run]
 
 [UninstallDelete]
-; Clean up the libs folder we created (Inno doesn't remove non-empty dirs by default)
+; Clean up legacy bundled-libs folder from older installs (pre-static-link
+; releases shipped libsndfile + deps under this subdir).
 Type: filesandordirs; Name: "{app}\reaper_ambix-libs"
 
 [Code]

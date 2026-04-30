@@ -24,8 +24,7 @@ fi
 
 BUILD_DIR="${BUILD_DIR:-build-dev}"
 
-PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-/opt/homebrew/lib/pkgconfig:/opt/homebrew/opt/libsndfile/lib/pkgconfig:/usr/local/lib/pkgconfig}" \
-    cmake -S . -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=MinSizeRel
+cmake -S . -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=MinSizeRel
 
 echo ">>> Done."
 echo ">>> Dev rebuild (auto-installs into REAPER UserPlugins):"

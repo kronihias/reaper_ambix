@@ -5,16 +5,14 @@
 #
 # Output: signed + notarized .pkg installer in _OSX_RELEASE/ that drops
 #   /Library/Application Support/REAPER/UserPlugins/reaper_ambix.dylib
-#         (statically linked: libambix + WavPack + WDL inside)
-#   /Library/Application Support/REAPER/UserPlugins/reaper_ambix-libs/
-#         libsndfile.1.dylib + recursive dependency closure (FLAC,
-#         vorbis, opus, mpg123, ...) — all relinked with @loader_path so
-#         the user does NOT need Homebrew installed.
+#         (statically linked: libambix + WavPack + WDL — no external deps)
 #
 # Pipeline (mirrors sonolink/scripts/build_osx.sh):
 #   1. cmake configure (REAPER_AMBIX_INSTALL_USER_PLUGINS=OFF) + parallel build
-#   2. recursively bundle libsndfile + deps, rewrite install_names
-#   3. codesign every .dylib with Developer ID Application + hardened runtime
+#   2. recursively bundle any non-system dynamic deps (defensive — currently
+#      none are expected since libambix and WavPack are statically linked)
+#   3. codesign the plugin (and any bundled deps) with Developer ID Application
+#      + hardened runtime
 #   4. pkgbuild the staging tree as a flat installer
 #   5. productsign with Developer ID Installer
 #   6. notarytool submit (--wait) + stapler staple
@@ -74,7 +72,7 @@ should_bundle() {
 }
 
 # Resolve a possibly-rpath-relative dep name to an absolute path so we can
-# walk it. For a Homebrew install_name like /opt/homebrew/opt/libsndfile/lib/...
+# walk it. For a Homebrew install_name like /opt/homebrew/opt/foo/lib/...
 # this is just the literal path.
 resolve_dep() {
     local dep="$1"
@@ -160,7 +158,6 @@ mkdir -p "$ROOT/_OSX_RELEASE"
 # =========================================================
 
 echo ""; echo "=== Configuring (Release, no user-plugin install) ==="
-PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-/opt/homebrew/lib/pkgconfig:/opt/homebrew/opt/libsndfile/lib/pkgconfig:/usr/local/lib/pkgconfig}" \
 cmake -S "$ROOT" -B "$BUILD_DIR" \
       -G "Unix Makefiles" \
       -DCMAKE_BUILD_TYPE=Release \
@@ -243,7 +240,7 @@ INSTALLER="$ROOT/_OSX_RELEASE/reaper_ambix_v${VERSION}_macos.pkg"
 echo ""; echo "=== Building installer payload ==="
 # install_name_tool stamps a com.apple.cs.CodeDirectory placeholder xattr on
 # every modified Mach-O. pkgbuild's pax-format payload then encodes those as
-# paired AppleDouble shadow files (._libsndfile.1.dylib, ...). Strip xattrs
+# paired AppleDouble shadow files (._<libname>.dylib, ...). Strip xattrs
 # AFTER install_name_tool runs and BEFORE the final stage copy.
 xattr -cr "$STAGE_DIR"
 find "$STAGE_DIR" -name "._*" -delete
