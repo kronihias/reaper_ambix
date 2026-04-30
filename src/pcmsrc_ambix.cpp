@@ -15,6 +15,7 @@ PCM_source *(*PCM_Source_CreateFromSimple)(ISimpleMediaDecoder *dec, const char 
 void (*format_timestr)(double tpos, char *buf, int buflen);
 void (*update_disk_counters)(int read, int write);
 void (*ShowConsoleMsg)(const char* msg);
+int  (*ShowMessageBox)(const char* msg, const char* title, int type);
 
 REAPER_PeakBuild_Interface *(*PeakBuild_Create)(PCM_source *src, const char *fn, int srate, int nch);
 void (*GetPreferredDiskWriteMode)(int *mode, int nb[2], int *bs);
@@ -91,6 +92,7 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
         IMPAPI(format_timestr);
         IMPAPI(update_disk_counters);
         IMPAPI(ShowConsoleMsg);
+        IMPAPI(ShowMessageBox);
         IMPAPI(get_ini_file);
         IMPAPI(GetPreferredDiskWriteMode);
         IMPAPI(PeakBuild_Create);

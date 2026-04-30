@@ -38,6 +38,7 @@ extern void (*format_timestr)(double tpos, char *buf, int buflen);
 extern REAPER_PeakBuild_Interface *(*PeakBuild_Create)(PCM_source *src, const char *fn, int srate, int nch);
 extern void (*update_disk_counters)(int read, int write);
 extern const char *(*get_ini_file)();
+extern int  (*ShowMessageBox)(const char *msg, const char *title, int type);
 extern HWND g_main_hwnd;
 
 
@@ -246,7 +247,20 @@ public:
     
     if (m_ambi_in_channels + m_xtrachannels > m_in_ch)
     {
-      printf("ERROR: not enough input channels! Got: %d, Need: %d\n", m_in_ch, m_ambi_in_channels + m_xtrachannels);
+      uint32_t need = m_ambi_in_channels + m_xtrachannels;
+      printf("ERROR: not enough input channels! Got: %d, Need: %d\n", m_in_ch, need);
+      if (ShowMessageBox)
+      {
+        char msg[512];
+        snprintf(msg, sizeof(msg),
+                 "ambix render aborted: not enough input channels.\n\n"
+                 "Got: %d channel(s)\n"
+                 "Need: %d channel(s)  (%d ambisonic + %d extra)\n\n"
+                 "Increase the track/master channel count or lower the\n"
+                 "ambisonic order in the ambix render settings.",
+                 m_in_ch, need, m_ambi_in_channels, m_xtrachannels);
+        ShowMessageBox(msg, "ambix render error", 0);
+      }
       return;
     }
     
@@ -290,7 +304,29 @@ public:
     m_fh=ambix_open(m_fn.Get(), open_mode, &m_ainfo);
     
     if (!m_fh) {
-      printf("Error: Cant't open file!\n");
+      printf("Error: Can't open file!\n");
+      if (ShowMessageBox)
+      {
+        char msg[1024];
+        snprintf(msg, sizeof(msg),
+                 "ambix render aborted: libambix could not open the output file.\n\n"
+                 "Path: %s\n"
+                 "Container: %s\n"
+                 "Format: %s\n"
+                 "Ambisonic channels: %u (order %u)\n"
+                 "Extra channels: %u\n"
+                 "Samplerate: %d Hz\n\n"
+                 "Common causes: destination folder is not writable, the path\n"
+                 "contains characters libambix cannot handle, or a file with\n"
+                 "this name is already open.",
+                 m_fn.Get(),
+                 m_wavpack_enabled ? "WavPack" : "CAF",
+                 (m_fileformat == AMBIX_BASIC) ? "BASIC" : "EXTENDED",
+                 m_ambi_out_channels, m_order,
+                 m_xtrachannels,
+                 m_srate);
+        ShowMessageBox(msg, "ambix render error", 0);
+      }
       return;
     }
     else
