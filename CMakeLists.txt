@@ -21,6 +21,11 @@ option(REAPER_AMBIX_INSTALL_USER_PLUGINS
 # it on in a dedicated job.
 option(REAPER_AMBIX_BUILD_TESTS "Build the loudness test suite" OFF)
 
+# The plugin itself needs the WDL / WavPack / libambix submodules. The loudness
+# tests need none of them, so a test-only build can skip the whole plugin (and
+# therefore the submodule checkout) by turning this off.
+option(REAPER_AMBIX_BUILD_PLUGIN "Build the REAPER extension" ON)
+
 # Default to MinSizeRel, but honor a caller-provided type (the build scripts
 # pass -DCMAKE_BUILD_TYPE=Release). Skipped for multi-config generators
 # (Visual Studio/Xcode), which pick the config at build time via --config.
@@ -53,6 +58,40 @@ IF(APPLE)
     	
 	SET(CMAKE_MACOSX_RPATH 1)
 ENDIF (APPLE)
+
+################################################
+# Tests — the loudness measurement is pure C++ with no REAPER dependency, so it
+# can be exercised standalone:
+#     cmake -S . -B build -DREAPER_AMBIX_BUILD_TESTS=ON -DREAPER_AMBIX_BUILD_PLUGIN=OFF
+#     cmake --build build && ctest --test-dir build --output-on-failure
+#
+# Defined before any plugin-specific directory properties (swell prefix, WDL
+# include path) so the test target does not inherit them.
+if(REAPER_AMBIX_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(test_loudness
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_loudness.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/loudness.cpp)
+    target_include_directories(test_loudness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set_target_properties(test_loudness PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
+    if(NOT MSVC)
+        target_compile_options(test_loudness PRIVATE -fsigned-char)
+    else()
+        target_compile_definitions(test_loudness PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_test(NAME loudness COMMAND test_loudness)
+endif()
+
+################################################
+# Everything below builds the extension itself and needs the vendored
+# submodules. A test-only configure stops here, so `git clone` without
+# --recursive is enough to run the test suite.
+if(NOT REAPER_AMBIX_BUILD_PLUGIN)
+    return()
+endif()
 
 # set unique name for swell functions
 ADD_DEFINITIONS(-DSWELL_APP_PREFIX=SWELL_AMBIX)
@@ -184,27 +223,4 @@ endif()
 # distros (Debian 12 / MX 23), and REAPER silently fails to dlopen it.
 if(NOT APPLE AND NOT MSVC)
 	target_link_options(reaper_ambix PRIVATE -static-libstdc++ -static-libgcc)
-endif()
-
-################################################
-# Tests — the loudness measurement is pure C++ with no REAPER dependency, so it
-# can be exercised standalone:
-#     cmake -S . -B build -DREAPER_AMBIX_BUILD_TESTS=ON && cmake --build build
-#     ctest --test-dir build --output-on-failure
-if(REAPER_AMBIX_BUILD_TESTS)
-    enable_testing()
-
-    add_executable(test_loudness
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_loudness.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/loudness.cpp)
-    target_include_directories(test_loudness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    set_target_properties(test_loudness PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
-
-    if(NOT MSVC)
-        target_compile_options(test_loudness PRIVATE -fsigned-char)
-    else()
-        target_compile_definitions(test_loudness PRIVATE _CRT_SECURE_NO_WARNINGS)
-    endif()
-
-    add_test(NAME loudness COMMAND test_loudness)
 endif()

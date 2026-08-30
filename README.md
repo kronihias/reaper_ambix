@@ -147,8 +147,11 @@ ambisonic layout detection, sample-rate independence, and a check that the
 derived K-weighting coefficients reproduce the values tabulated in BS.1770-4 at
 48 kHz.
 
+`REAPER_AMBIX_BUILD_PLUGIN=OFF` skips the extension itself, so the tests build
+without the vendored submodules — a plain `git clone` is enough:
+
 ```
-cmake -S . -B build-tests -DREAPER_AMBIX_BUILD_TESTS=ON
+cmake -S . -B build-tests -DREAPER_AMBIX_BUILD_TESTS=ON -DREAPER_AMBIX_BUILD_PLUGIN=OFF
 cmake --build build-tests --target test_loudness
 ctest --test-dir build-tests --output-on-failure
 ```

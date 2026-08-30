@@ -17,8 +17,10 @@ jobs:
 
     - name: Configure
       run: |
+        # BUILD_PLUGIN=OFF keeps this configure clear of WDL/WavPack/libambix,
+        # so the job does not need a submodule checkout to run the tests.
         cmake -S . -B _build_tests -DREAPER_AMBIX_BUILD_TESTS=ON \
-              -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
+              -DREAPER_AMBIX_BUILD_PLUGIN=OFF
 
     - name: Build
       run: cmake --build _build_tests --target test_loudness -j "$(nproc)"
