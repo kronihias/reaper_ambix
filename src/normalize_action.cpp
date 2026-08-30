@@ -21,6 +21,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <commctrl.h>   /* PBM_SETRANGE / PBM_SETPOS and msctls_progress32 */
 #else
 #include "swell/swell.h"
 #endif
@@ -642,6 +643,13 @@ bool AmbixNormalizeInit(reaper_plugin_info_t *rec)
   *((void **)&Envelope_Evaluate)     = (void *)rec->GetFunc("Envelope_Evaluate");
   *((void **)&ValidatePtr2)          = (void *)rec->GetFunc("ValidatePtr2");
   if (!Envelope_Evaluate) GetTakeEnvelopeByName = NULL;
+
+#ifdef _WIN32
+  /* Register the msctls_progress32 window class. REAPER's own UI already pulls
+   * comctl32 in, so this is belt and braces — but a progress bar that silently
+   * fails to create would be an annoying thing to debug remotely. */
+  InitCommonControls();
+#endif
 
   g_normalizeCmd = rec->Register("command_id", (void *)"AMBIX_NORMALIZE_ITEM_LOUDNESS");
   if (!g_normalizeCmd) return false;

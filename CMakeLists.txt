@@ -214,6 +214,12 @@ endif()
 # vendored libambix (statically linked, in turn pulls in vendored WavPack)
 target_link_libraries (reaper_ambix ambix wavpack)
 
+# comctl32 provides InitCommonControls() and the msctls_progress32 class used
+# by the normalize progress dialog. (SWELL implements both itself elsewhere.)
+IF(WIN32)
+	target_link_libraries (reaper_ambix comctl32)
+ENDIF(WIN32)
+
 # Since we're linking libambix statically, define AMBIX_STATIC to avoid dllimport
 target_compile_definitions(reaper_ambix PRIVATE AMBIX_STATIC)
 
