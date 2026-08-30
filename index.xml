@@ -4,7 +4,8 @@
     <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus a loudness normalize action">
       <version name="0.2.0" author="Matthias Kronlachner" time="2026-08-30T00:00:00Z">
         <changelog><![CDATA[- Distribute through ReaPack (raw per-platform binaries on GitHub releases)
-- New action: normalize selected item(s) to a target integrated loudness (LUFS), ambisonics- and surround-aware
+- New action: normalize selected item(s) to a target integrated loudness (LUFS), measured locally to ITU-R BS.1770-4. Ambisonic items are measured on the W channel alone; surround beds use the BS.1770-5 Annex 3 weighting up to 9.1.4
+- Analysis runs behind a progress dialog and can be cancelled
 - Linux (x86_64 + aarch64) and Windows ARM64 builds
 - macOS builds are now universal (Apple Silicon + Intel)]]></changelog>
         <source platform="darwin" file="reaper_ambix.dylib">https://github.com/kronihias/reaper_ambix/releases/download/v0.2.0/reaper_ambix.dylib</source>
