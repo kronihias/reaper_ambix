@@ -7,10 +7,46 @@ ambiX (Ambisonics eXchangeable) specification [1].
 Output can be written uncompressed (CAF container) or with WavPack lossless
 compression. Reading auto-detects the container from the file's magic bytes.
 
+It also adds a loudness normalization action — see [Actions](#actions) below.
+
 [1] C. Nachbar, F. Zotter, E. Deleflie, A. Sontacchi. *ambiX – A Suggested
 Ambisonics Format.* Proceedings of the Ambisonics Symposium 2011, Lexington,
 KY, June 2–3, 2011.
 [ambisonics.iem.at](https://ambisonics.iem.at/proceedings-of-the-ambisonics-symposium-2011/ambix-a-suggested-ambisonics-format)
+
+
+Actions
+-------
+
+The extension registers one action in REAPER's main action list:
+
+**ambiX: Normalize selected item(s) to target loudness (LUFS)...**
+
+It asks for a target level, measures the integrated loudness of each selected
+item's active take, and sets the take volume so the item lands on that target.
+The measured and applied values are printed to the ReaScript console, and the
+whole run is a single undo point. The target is remembered between sessions.
+
+The measurement is ITU-R BS.1770-4 (K-weighting, 400 ms blocks at 75 % overlap,
+absolute -70 LUFS and relative -10 LU gating), implemented locally in
+[src/loudness.cpp](src/loudness.cpp) — no external library is involved.
+
+Channel handling follows BS.1770-5 Annex 3:
+
+| Source | Measured |
+| --- | --- |
+| Ambisonic (channel count is a perfect square ≥ 4: FOA 4, SOA 9, TOA 16, …) | W channel only, G = 1.00 |
+| Up to 7.1.4 (12 ch, Dolby/SMPTE order) | LFE excluded, Ls/Rs at G = 1.41, everything else G = 1.00 |
+| 9.1.4 (14 ch, Dolby/SMPTE order) | as above, plus Lss/Rss at G = 1.41 |
+| Mono / stereo | G = 1.00 per channel |
+
+Measuring only W for ambisonic material is both correct — per Peters & Epain
+(AES 154th, 2023) applying BS.1770 to W matches a full loudspeaker rendering —
+and much cheaper, since the other HOA channels never have to be read.
+
+Note that a 4-channel item is read as first-order ambisonics rather than quad
+or LCRS, which is the useful default for this plugin but worth knowing if you
+point the action at a non-ambisonic 4-channel file.
 
 
 Screenshots
@@ -36,15 +72,42 @@ ambisonic order, channel layout and adapter matrix info:
 Releases
 --------
 
-Signed installers for Windows (`.exe`) and macOS (`.pkg`) are built automatically
-and published in [GitHub Releases](https://github.com/kronihias/reaper_ambix/releases).
+Signed installers for Windows (`.exe`, x64 and ARM64), macOS (`.pkg`, universal)
+and a Linux tarball (x86_64 and aarch64) are built automatically and published in
+[GitHub Releases](https://github.com/kronihias/reaper_ambix/releases).
 
-To cut a new release:
 
-1. Bump the `VERSION` file
-2. Commit and push
-3. Create a GitHub release with the tag `vX.Y.Z` (matching `VERSION`)
-4. Publishing the release triggers the build + signing workflow
+ReaPack
+-------
+
+The extension is also distributed through [ReaPack](https://reapack.com/), which
+installs the bare plugin file directly (no installer). In REAPER choose
+*Extensions → ReaPack → Import repositories…* and paste:
+
+```
+https://github.com/kronihias/reaper_ambix/raw/master/index.xml
+```
+
+Then open *Extensions → ReaPack → Browse packages*, find **reaper_ambix** under
+the *Extensions* category, install, and restart REAPER. ReaPack downloads the
+matching per-platform binary straight from the GitHub release assets.
+
+The package index ([index.xml](index.xml)) is generated from
+[Extensions/reaper_ambix.ext](Extensions/reaper_ambix.ext) by
+`scripts/reapack_index.sh` (cfillion's `reapack-index` tool).
+
+
+Cutting a release
+-----------------
+
+1. Bump the `VERSION` file **and** the `@version` in
+   [Extensions/reaper_ambix.ext](Extensions/reaper_ambix.ext) (keep them in
+   sync), update the `@changelog`, and commit.
+2. Run `./scripts/reapack_index.sh` to regenerate `index.xml`, and commit it.
+3. Publish a GitHub release tagged `vX.Y.Z` (matching `VERSION`). Publishing
+   triggers the build + signing workflow, which builds the installers **and**
+   uploads the raw per-platform binaries (`.dll`/`.dylib`/`.so`) that ReaPack
+   pulls from the release assets.
 
 Code-signing setup is documented in [.github/CODE_SIGNING.md](.github/CODE_SIGNING.md).
 
@@ -54,9 +117,10 @@ Building from source
 
 Requirements:
 
-- CMake 3.10+ and a C++ toolchain
+- CMake 3.13+ and a C++ toolchain
 - macOS: Xcode command-line tools
 - Windows: Visual Studio 2022 (Desktop development with C++)
+- Linux: `build-essential`
 
 `libambix` (with native CAF backend) and `WavPack` are vendored as git
 submodules and linked statically — no external audio libraries required.
@@ -68,8 +132,29 @@ cd reaper_ambix
 cmake --build build-dev   # writes the plug-in straight into REAPER's UserPlugins
 ```
 
-For signed/notarized installer builds, see [scripts/build_osx.sh](scripts/build_osx.sh)
-and [scripts/build_win.bat](scripts/build_win.bat).
+For signed/notarized installer builds, see [scripts/build_osx.sh](scripts/build_osx.sh),
+[scripts/build_win.bat](scripts/build_win.bat) and
+[scripts/build_linux.sh](scripts/build_linux.sh).
+
+
+Tests
+-----
+
+The loudness measurement has no REAPER dependency and is covered by a standalone
+test suite ([tests/test_loudness.cpp](tests/test_loudness.cpp)): the EBU Tech 3341
+integrated-loudness compliance cases, the BS.1770-5 channel weightings, the
+ambisonic layout detection, sample-rate independence, and a check that the
+derived K-weighting coefficients reproduce the values tabulated in BS.1770-4 at
+48 kHz.
+
+```
+cmake -S . -B build-tests -DREAPER_AMBIX_BUILD_TESTS=ON
+cmake --build build-tests --target test_loudness
+ctest --test-dir build-tests --output-on-failure
+```
+
+CI runs this on every push, and a release build will not package anything until
+it passes.
 
 
 Credits

@@ -5,6 +5,9 @@
 /_build_win/
 /_OSX_RELEASE/
 /_WIN_RELEASE/
+/_LINUX_RELEASE/
+/_build_tests/
+/build-tests/
 /libambix/build-cmake/
 
 # macOS

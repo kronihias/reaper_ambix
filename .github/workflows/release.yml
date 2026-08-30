@@ -11,8 +11,32 @@ on:
         default: 'test'
 
 jobs:
+  # Gate every packaging job on the loudness test suite — a broken measurement
+  # would silently mis-normalize items rather than fail loudly.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build and run the loudness tests
+      run: |
+        cmake -S . -B _build_tests -DREAPER_AMBIX_BUILD_TESTS=ON \
+              -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
+        cmake --build _build_tests --target test_loudness -j "$(nproc)"
+        ctest --test-dir _build_tests --output-on-failure
+
   build-windows:
+    needs: test
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64       # native x86_64
+            tag: win64
+          - arch: arm64     # cross-compiled from the x64 host (VS ARM64 toolset)
+            tag: winarm64
     env:
       WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
       WINDOWS_CODESIGN_SUBJECT: ${{ secrets.WINDOWS_CODESIGN_SUBJECT }}
@@ -23,18 +47,18 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        
+
     - name: Get version
       id: version
       run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
       shell: bash
-        
+
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
-      
+
     - name: Install CMake
       uses: lukka/get-cmake@latest
-      
+
     - name: Install Inno Setup
       run: |
         choco install innosetup
@@ -53,54 +77,81 @@ jobs:
       if: env.WINDOWS_CODESIGN_PFX == ''
       run: |
         cd scripts
-        .\build_win.bat --no-sign
+        .\build_win.bat --arch ${{ matrix.arch }} --no-sign
       shell: cmd
 
     - name: Build Windows installer (signed)
       if: env.WINDOWS_CODESIGN_PFX != ''
       run: |
         cd scripts
-        .\build_win.bat
+        .\build_win.bat --arch ${{ matrix.arch }}
       shell: cmd
-        
+
     - name: Check Windows installer
       run: |
-        if not exist ".\_WIN_RELEASE\reaper_ambix_v${{ steps.version.outputs.version }}_win64_setup.exe" (
+        if not exist ".\_WIN_RELEASE\reaper_ambix_v${{ steps.version.outputs.version }}_${{ matrix.tag }}_setup.exe" (
           echo Windows installer not found
           exit /b 1
         )
       shell: cmd
-        
+
     - name: Upload Windows installer as artifact
       if: github.event_name == 'workflow_dispatch'
       uses: actions/upload-artifact@v4
       with:
-        name: windows-installer
-        path: ./_WIN_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_win64_setup.exe
-        
+        name: windows-installer-${{ matrix.tag }}
+        path: ./_WIN_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_${{ matrix.tag }}_setup.exe
+
     - name: Upload Windows installer
       if: github.event_name == 'release'
-      run: gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} ./_WIN_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_win64_setup.exe
+      run: gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} ./_WIN_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_${{ matrix.tag }}_setup.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # Raw (codesigned) DLL for ReaPack, which installs bare files rather than
+    # running the installer. The asset name carries the arch tag because both
+    # Windows builds produce a file called reaper_ambix.dll.
+    - name: Upload raw extension binary (ReaPack)
+      if: github.event_name == 'release'
+      run: |
+        cp "_build_win/stage/REAPER/UserPlugins/reaper_ambix.dll" "reaper_ambix-${{ matrix.tag }}.dll"
+        gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} "reaper_ambix-${{ matrix.tag }}.dll" --clobber
+      shell: bash
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos:
+    needs: test
     runs-on: macos-latest
-    
+    # Job-level env so the codesigning secrets are visible to every step's
+    # `if:` condition. (A variable defined only in a step's own `env:` block is
+    # NOT available to that same step's `if:`, which previously caused the
+    # cert-import step to be skipped while the build step still tried to sign,
+    # failing with "codesign: no identity found".)
+    env:
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      CODESIGN_CERTIFICATE_P12: ${{ secrets.CODESIGN_CERTIFICATE_P12 }}
+      CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+      CODESIGN_APP: ${{ secrets.CODESIGN_APP }}
+      CODESIGN_INSTALLER: ${{ secrets.CODESIGN_INSTALLER }}
+      NOTARIZE_APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
+      NOTARIZE_PASSWORD: ${{ secrets.NOTARIZE_PASSWORD }}
+      NOTARIZE_TEAM_ID: ${{ secrets.NOTARIZE_TEAM_ID }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        
+
     - name: Get version
       id: version
       run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
-        
+
     - name: Install dependencies
       run: |
         brew install cmake
-        
+
     - name: Setup code signing
       if: env.CODESIGN_CERTIFICATE_P12 != ''
       run: |
@@ -109,12 +160,12 @@ jobs:
         security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
         security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-        
+
         # Import certificate
         echo "$CODESIGN_CERTIFICATE_P12" | base64 --decode > certificate.p12
         security import certificate.p12 -P "$CODESIGN_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
         security list-keychain -d user -s $KEYCHAIN_PATH
-        
+
         # Create codesign.env file
         cat > scripts/codesign.env << EOF
         CODESIGN_APP="$CODESIGN_APP"
@@ -123,16 +174,7 @@ jobs:
         NOTARIZE_PASSWORD="$NOTARIZE_PASSWORD"
         NOTARIZE_TEAM_ID="$NOTARIZE_TEAM_ID"
         EOF
-      env:
-        KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        CODESIGN_CERTIFICATE_P12: ${{ secrets.CODESIGN_CERTIFICATE_P12 }}
-        CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
-        CODESIGN_APP: ${{ secrets.CODESIGN_APP }}
-        CODESIGN_INSTALLER: ${{ secrets.CODESIGN_INSTALLER }}
-        NOTARIZE_APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
-        NOTARIZE_PASSWORD: ${{ secrets.NOTARIZE_PASSWORD }}
-        NOTARIZE_TEAM_ID: ${{ secrets.NOTARIZE_TEAM_ID }}
-        
+
     - name: Build macOS installer
       run: |
         cd scripts
@@ -141,25 +183,99 @@ jobs:
         else
           ./build_osx.sh --no-sign
         fi
-      env:
-        CODESIGN_CERTIFICATE_P12: ${{ secrets.CODESIGN_CERTIFICATE_P12 }}
-        
+
     - name: Check macOS installer
       run: |
         if [ ! -f "./_OSX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_macos.pkg" ]; then
           echo "macOS installer not found"
           exit 1
         fi
-        
+
     - name: Upload macOS installer as artifact
       if: github.event_name == 'workflow_dispatch'
       uses: actions/upload-artifact@v4
       with:
         name: macos-installer
         path: ./_OSX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_macos.pkg
-        
+
     - name: Upload macOS installer
       if: github.event_name == 'release'
       run: gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} ./_OSX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_macos.pkg
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # Raw (codesigned) universal dylib for ReaPack. One file covers Apple
+    # Silicon + Intel, so no arch suffix is needed.
+    - name: Upload raw extension binary (ReaPack)
+      if: github.event_name == 'release'
+      run: gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} "_build/stage/Library/Application Support/REAPER/UserPlugins/reaper_ambix.dylib" --clobber
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Build on the OLDEST supported runner, not ubuntu-latest. The runner's
+          # glibc/libstdc++ sets the minimum the .so requires at load time; build
+          # on 24.04 (glibc 2.39, GCC 13) and REAPER silently fails to dlopen the
+          # plugin on older distros like Debian 12 / MX 23 (glibc 2.36, GCC 12).
+          # 22.04 = glibc 2.35, a floor below every currently supported distro.
+          - runner: ubuntu-22.04        # x86_64
+            arch: x86_64
+          - runner: ubuntu-22.04-arm    # native aarch64 runner
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Get version
+      id: version
+      run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake
+
+    - name: Build Linux tarball
+      run: |
+        cd scripts
+        ./build_linux.sh
+
+    - name: Check Linux tarball
+      run: |
+        if [ ! -f "./_LINUX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_linux_${{ matrix.arch }}.tar.gz" ]; then
+          echo "Linux tarball not found"
+          exit 1
+        fi
+
+    - name: Upload Linux tarball as artifact
+      if: github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-tarball-${{ matrix.arch }}
+        path: ./_LINUX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_linux_${{ matrix.arch }}.tar.gz
+
+    - name: Upload Linux tarball
+      if: github.event_name == 'release'
+      run: gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} ./_LINUX_RELEASE/reaper_ambix_v${{ steps.version.outputs.version }}_linux_${{ matrix.arch }}.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # Raw .so for ReaPack, which installs the bare file rather than extracting
+    # the tarball. The asset name carries the arch since each build produces a
+    # file called reaper_ambix.so.
+    - name: Upload raw extension binary (ReaPack)
+      if: github.event_name == 'release'
+      run: |
+        cp _build/out/reaper_ambix.so reaper_ambix-${{ matrix.arch }}.so
+        gh release upload ${{ github.event.inputs.tag_name || github.event.release.tag_name }} reaper_ambix-${{ matrix.arch }}.so --clobber
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

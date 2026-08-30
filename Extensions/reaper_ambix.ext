@@ -1,0 +1,35 @@
+@description ambiX (.ambix) file support for REAPER, plus a loudness normalize action
+@version 0.2.0
+@author Matthias Kronlachner
+@metapackage
+@provides
+  [darwin]          reaper_ambix.dylib https://github.com/kronihias/reaper_ambix/releases/download/v$version/reaper_ambix.dylib
+  [win64]           reaper_ambix.dll   https://github.com/kronihias/reaper_ambix/releases/download/v$version/reaper_ambix-win64.dll
+  [windows-arm64ec] reaper_ambix.dll   https://github.com/kronihias/reaper_ambix/releases/download/v$version/reaper_ambix-winarm64.dll
+  [linux64]         reaper_ambix.so    https://github.com/kronihias/reaper_ambix/releases/download/v$version/reaper_ambix-x86_64.so
+  [linux-aarch64]   reaper_ambix.so    https://github.com/kronihias/reaper_ambix/releases/download/v$version/reaper_ambix-aarch64.so
+@link https://github.com/kronihias/reaper_ambix
+@about
+  # reaper_ambix
+
+  REAPER extension adding read and write support for `.ambix` files following
+  the ambiX (Ambisonics eXchangeable) specification. Output can be written
+  uncompressed (CAF container) or with WavPack lossless compression; reading
+  auto-detects the container.
+
+  It also adds an action to the main action list:
+
+  **ambiX: Normalize selected item(s) to target loudness (LUFS)...**
+
+  Measures the integrated loudness of each selected item to ITU-R BS.1770 and
+  sets the take volume so it lands on the target you enter. Ambisonic items are
+  measured on the W channel alone; surround beds use the BS.1770-5 Annex 3
+  channel weighting up to 9.1.4.
+
+  Restart REAPER after installing or updating.
+@changelog
+  - Distribute through ReaPack (raw per-platform binaries on GitHub releases)
+  - New action: normalize selected item(s) to a target integrated loudness
+    (LUFS), ambisonics- and surround-aware
+  - Linux (x86_64 + aarch64) and Windows ARM64 builds
+  - macOS builds are now universal (Apple Silicon + Intel)

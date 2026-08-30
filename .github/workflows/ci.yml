@@ -1,0 +1,78 @@
+name: CI
+
+# Build the plugin on every platform we ship and run the loudness test suite,
+# so breakage shows up on push instead of at release time.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Loudness tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure
+      run: |
+        cmake -S . -B _build_tests -DREAPER_AMBIX_BUILD_TESTS=ON \
+              -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
+
+    - name: Build
+      run: cmake --build _build_tests --target test_loudness -j "$(nproc)"
+
+    - name: Run ctest
+      run: ctest --test-dir _build_tests --output-on-failure
+
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            runner: macos-latest
+            plugin: reaper_ambix.dylib
+          - name: Windows x64
+            runner: windows-latest
+            plugin: reaper_ambix.dll
+          # Same old-glibc baseline as the release workflow, so a build that
+          # passes here is a build that loads on the distros we support.
+          - name: Linux x86_64
+            runner: ubuntu-22.04
+            plugin: reaper_ambix.so
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake
+
+    - name: Configure
+      shell: bash
+      run: |
+        cmake -S . -B _build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
+
+    - name: Build
+      run: cmake --build _build --config Release -j 4
+
+    - name: Check the plugin was produced
+      shell: bash
+      run: |
+        # MSVC multi-config generators write into a per-config subdirectory.
+        found=$(find _build -name "${{ matrix.plugin }}" -type f | head -n1)
+        if [ -z "$found" ]; then
+          echo "Build did not produce ${{ matrix.plugin }}"
+          exit 1
+        fi
+        ls -la "$found"

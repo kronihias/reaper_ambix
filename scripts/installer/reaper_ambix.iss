@@ -5,6 +5,8 @@
 ;     /DReaperAmbixVersion=X.Y.Z
 ;     /DReaperAmbixStageDir=path\to\staged\plugin\folder
 ;     /DReaperAmbixOutputDir=path\to\put\setup.exe
+;     /DReaperAmbixArchTag=win64|winarm64           (output filename suffix)
+;     /DReaperAmbixArchAllowed=x64compatible|arm64  (Inno Setup architecture)
 ;  so this file does not need to be edited per-release.
 ; ============================================================================
 
@@ -16,6 +18,13 @@
 #endif
 #ifndef ReaperAmbixOutputDir
   #error You must invoke ISCC with /DReaperAmbixOutputDir=...
+#endif
+; Architecture knobs default to x64 so a bare ISCC invocation still works.
+#ifndef ReaperAmbixArchTag
+  #define ReaperAmbixArchTag "win64"
+#endif
+#ifndef ReaperAmbixArchAllowed
+  #define ReaperAmbixArchAllowed "x64compatible"
 #endif
 
 [Setup]
@@ -32,11 +41,11 @@ DisableDirPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir={#ReaperAmbixOutputDir}
-OutputBaseFilename=reaper_ambix_v{#ReaperAmbixVersion}_win64_setup
+OutputBaseFilename=reaper_ambix_v{#ReaperAmbixVersion}_{#ReaperAmbixArchTag}_setup
 Compression=lzma2
 SolidCompression=yes
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ReaperAmbixArchAllowed}
+ArchitecturesInstallIn64BitMode={#ReaperAmbixArchAllowed}
 WizardStyle=modern
 UninstallDisplayName=reaper_ambix {#ReaperAmbixVersion}
 LicenseFile={#SourcePath}\..\..\COPYING

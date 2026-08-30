@@ -71,6 +71,11 @@ pcmsrc_register_t myRegStruct={CreateFromType,CreateFromFile,EnumFileExtensions}
 
 extern pcmsink_register_ext_t mySinkRegStruct; // from pcmsink_ambix.cpp
 
+// from normalize_action.cpp - registers the "normalize item loudness" action.
+// Returns false if the REAPER build is missing an API we need; the rest of the
+// plugin (read/write support) keeps working in that case.
+extern bool AmbixNormalizeInit(reaper_plugin_info_t *rec);
+
 const char *(*GetExePath)();
 
 extern "C"
@@ -118,9 +123,10 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
             printf("Registered normal Sink!\n");
           
         }
-      
-      
-      
+
+        if (!AmbixNormalizeInit(rec))
+          printf("Failed to register the normalize-loudness action\n");
+
         return 1;
     }
     return 0;

@@ -2,7 +2,7 @@
 REM ============================================================================
 REM  reaper_ambix - Windows build, codesign and installer pipeline.
 REM
-REM  Usage:  scripts\build_win.bat [--no-sign]
+REM  Usage:  scripts\build_win.bat [--arch x64|arm64] [--no-sign]
 REM
 REM  Prereqs (all optional but the obvious ones are required for a real build):
 REM    - Visual Studio 2022 (with "Desktop development with C++" workload)
@@ -11,7 +11,7 @@ REM    - Inno Setup 6 ("ISCC.exe" on PATH or in default Program Files dir)
 REM    - signtool.exe (Windows SDK) for codesigning
 REM
 REM  Output:
-REM    _WIN_RELEASE\reaper_ambix_vX.Y.Z_win64_setup.exe -- signed installer
+REM    _WIN_RELEASE\reaper_ambix_vX.Y.Z_<win64|winarm64>_setup.exe -- signed installer
 REM    that drops:
 REM      %APPDATA%\REAPER\UserPlugins\reaper_ambix.dll
 REM    (statically linked: libambix + WavPack + WDL — no external deps)
@@ -31,16 +31,39 @@ echo === reaper_ambix v%VERSION% - Windows installer build ===
 
 REM -- parse args
 set SKIP_SIGN=0
+set ARCH=x64
 :parse_args
 if "%~1"=="" goto args_done
-if /I "%~1"=="--no-sign" (set SKIP_SIGN=1) else (
-    echo Unknown option: %~1
-    echo Usage: %~nx0 [--no-sign]
+if /I "%~1"=="--no-sign" (
+    set SKIP_SIGN=1
+    shift
+    goto parse_args
+)
+if /I "%~1"=="--arch" (
+    set "ARCH=%~2"
+    shift
+    shift
+    goto parse_args
+)
+echo Unknown option: %~1
+echo Usage: %~nx0 [--arch x64^|arm64] [--no-sign]
+exit /b 1
+:args_done
+
+REM -- map target arch -> CMake platform, output tag and Inno Setup architecture
+if /I "%ARCH%"=="x64" (
+    set "CMAKE_ARCH=x64"
+    set "ARCH_TAG=win64"
+    set "ISS_ARCH=x64compatible"
+) else if /I "%ARCH%"=="arm64" (
+    set "CMAKE_ARCH=ARM64"
+    set "ARCH_TAG=winarm64"
+    set "ISS_ARCH=arm64"
+) else (
+    echo Error: unknown --arch "%ARCH%" ^(expected x64 or arm64^)
     exit /b 1
 )
-shift
-goto parse_args
-:args_done
+echo === Target architecture: %ARCH% ^(CMake -A %CMAKE_ARCH%, %ARCH_TAG%^) ===
 
 REM -- load credentials env (cmd-style) by re-reading the bash one
 if "%SKIP_SIGN%"=="1" goto skip_load_creds
@@ -71,13 +94,18 @@ REM ============================================================================
 REM Configure + build
 REM ============================================================================
 echo.
-echo === Configuring (Visual Studio 2022 x64) ===
+echo === Configuring (default Visual Studio generator, %CMAKE_ARCH%) ===
 REM No vcpkg / external toolchain needed: libambix and WavPack are vendored
-REM and statically linked. (We deliberately ignore VCPKG_ROOT — VS 2022 sets it
-REM to a Program Files path whose embedded space breaks unquoted command-line
+REM and statically linked. (We deliberately ignore VCPKG_ROOT — VS sets it to a
+REM Program Files path whose embedded space breaks unquoted command-line
 REM expansion.)
+REM
+REM Let CMake pick the newest installed Visual Studio rather than pinning a
+REM version: a hard-coded "-G Visual Studio 17 2022" breaks the moment the CI
+REM runner moves to VS 18+. "-A" selects the target platform (x64 / ARM64); the
+REM ARM64 build cross-compiles from the x64 host using the VS ARM64 toolset.
 cmake -S "%ROOT%" -B "%BUILD_DIR%" ^
-      -G "Visual Studio 17 2022" -A x64 ^
+      -A %CMAKE_ARCH% ^
       -DCMAKE_BUILD_TYPE=Release ^
       -DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF
 if errorlevel 1 exit /b 1
@@ -158,10 +186,12 @@ echo === Compiling installer (Inno Setup) ===
     /DReaperAmbixVersion=%VERSION% ^
     /DReaperAmbixStageDir=%INSTALL_PARENT% ^
     /DReaperAmbixOutputDir=%RELEASE_DIR% ^
+    /DReaperAmbixArchTag=%ARCH_TAG% ^
+    /DReaperAmbixArchAllowed=%ISS_ARCH% ^
     "%ISS%"
 if errorlevel 1 exit /b 1
 
-set INSTALLER=%RELEASE_DIR%\reaper_ambix_v%VERSION%_win64_setup.exe
+set INSTALLER=%RELEASE_DIR%\reaper_ambix_v%VERSION%_%ARCH_TAG%_setup.exe
 
 REM ============================================================================
 REM Codesign installer itself
