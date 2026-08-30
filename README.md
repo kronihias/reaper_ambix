@@ -136,6 +136,16 @@ For signed/notarized installer builds, see [scripts/build_osx.sh](scripts/build_
 [scripts/build_win.bat](scripts/build_win.bat) and
 [scripts/build_linux.sh](scripts/build_linux.sh).
 
+**Note:** a dev build writes into the *user* plugin folder
+(`~/Library/Application Support/REAPER/UserPlugins` on macOS,
+`~/.config/REAPER/UserPlugins` on Linux), while the macOS installer writes into
+the *system* folder (`/Library/Application Support/REAPER/UserPlugins`). REAPER
+scans both, and a dev build left in the user folder will shadow anything
+installed later by the installer or ReaPack — you keep running the old binary
+with no warning. Delete the dev copy before testing a packaged build, or
+configure with `-DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF` so `make` never puts
+one there.
+
 
 Tests
 -----
