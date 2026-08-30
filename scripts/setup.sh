@@ -24,11 +24,17 @@ fi
 
 BUILD_DIR="${BUILD_DIR:-build-dev}"
 
-cmake -S . -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=MinSizeRel
+# REAPER_AMBIX_INSTALL_USER_PLUGINS is OFF by default so that no build lands in
+# a folder REAPER loads from by accident. The dev tree is exactly the place
+# where that behaviour IS wanted, so turn it on here explicitly.
+cmake -S . -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=MinSizeRel \
+      -DREAPER_AMBIX_INSTALL_USER_PLUGINS=ON
 
 echo ">>> Done."
 echo ">>> Dev rebuild (auto-installs into REAPER UserPlugins):"
 echo "      cmake --build $BUILD_DIR -j"
+echo ">>> Remember to delete that copy before testing an installer/ReaPack"
+echo ">>> build - the user folder shadows the system one."
 echo ">>> Signed installer:"
 echo "      ./scripts/build_osx.sh           (macOS .pkg)"
 echo "      scripts\\build_win.bat           (Windows .exe)"

@@ -8,13 +8,21 @@ string(STRIP "${REAPER_AMBIX_VERSION}" REAPER_AMBIX_VERSION)
 project (reaper_ambix VERSION ${REAPER_AMBIX_VERSION})
 
 # Build mode:
-#  - ON  (default): drop the .dylib straight into the user's REAPER plugin
-#                   folder so a simple `make` reloads in Reaper for dev work.
-#  - OFF (CI / installer): leave it in the build tree so build_osx.sh /
-#                          build_win.bat can stage + sign + package it.
+#  - OFF (default): leave the plugin in the build tree, so build_osx.sh /
+#                   build_win.bat / build_linux.sh can stage + sign + package
+#                   it, and so a stray build never ends up somewhere REAPER
+#                   loads from.
+#  - ON  (dev): drop the plugin straight into the user's REAPER plugin folder
+#               so a simple `make` reloads it in REAPER. scripts/setup.sh
+#               configures the dev tree with this on.
+#
+# Default OFF on purpose. REAPER scans both the user plugin folder and the
+# system one, and the user copy wins on identical filenames — so a dev build
+# left behind silently shadows anything the installer or ReaPack puts in the
+# system folder, and you keep running the old binary with no warning.
 option(REAPER_AMBIX_INSTALL_USER_PLUGINS
        "Copy the built plugin into the user's REAPER UserPlugins folder"
-       ON)
+       OFF)
 
 # Unit tests for the loudness measurement (tests/test_loudness.cpp). Off by
 # default so installer/CI plugin builds stay lean; the release workflow turns

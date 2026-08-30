@@ -136,15 +136,17 @@ For signed/notarized installer builds, see [scripts/build_osx.sh](scripts/build_
 [scripts/build_win.bat](scripts/build_win.bat) and
 [scripts/build_linux.sh](scripts/build_linux.sh).
 
-**Note:** a dev build writes into the *user* plugin folder
-(`~/Library/Application Support/REAPER/UserPlugins` on macOS,
-`~/.config/REAPER/UserPlugins` on Linux), while the macOS installer writes into
-the *system* folder (`/Library/Application Support/REAPER/UserPlugins`). REAPER
-scans both, and a dev build left in the user folder will shadow anything
-installed later by the installer or ReaPack — you keep running the old binary
-with no warning. Delete the dev copy before testing a packaged build, or
-configure with `-DREAPER_AMBIX_INSTALL_USER_PLUGINS=OFF` so `make` never puts
-one there.
+**Note:** `scripts/setup.sh` configures the dev tree with
+`REAPER_AMBIX_INSTALL_USER_PLUGINS=ON`, so a rebuild writes into the *user*
+plugin folder (`~/Library/Application Support/REAPER/UserPlugins` on macOS,
+`~/.config/REAPER/UserPlugins` on Linux). The macOS installer writes into the
+*system* folder (`/Library/Application Support/REAPER/UserPlugins`) instead.
+REAPER scans both and the user copy wins on identical filenames, so **delete
+the dev build before testing an installer or ReaPack install** — otherwise it
+silently shadows the packaged one and you keep running the old binary.
+
+The option itself defaults to **OFF** precisely so that no build ends up in a
+folder REAPER loads from unless you asked for it; only the dev tree opts in.
 
 
 Tests
