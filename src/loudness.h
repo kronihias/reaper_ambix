@@ -74,8 +74,10 @@ private:
  *
  * Fills weightsOut (must hold at least AMBIX_LOUDNESS_MAX_CHANNELS entries) and
  * returns how many leading channels have to be requested from the audio
- * accessor — 1 for ambisonics, sourceChannels otherwise (capped at
- * AMBIX_LOUDNESS_MAX_CHANNELS). */
+ * accessor: 1 for ambisonics, otherwise one past the last channel that carries
+ * a non-zero weight. Trailing channels that BS.1770 does not weight are never
+ * requested and never filtered — a 20-channel non-ambisonic source only costs
+ * 12 channels of work, and a 36-channel fifth-order bed only costs one. */
 int AmbixLoudnessChannelSetup(int sourceChannels, double *weightsOut,
                               bool *isAmbisonicsOut);
 

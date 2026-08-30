@@ -102,6 +102,10 @@ void AmbixLoudnessMeter::FilterAndAccumulate(const double *interleaved, int fram
 
     for (int c = 0; c < nch; ++c)
     {
+      /* An unweighted channel (LFE, or padding past the layout) contributes
+       * nothing to the sum, so there is no point K-weighting it. */
+      if (m_weights[c] == 0.0) continue;
+
       double *h = hist + (size_t)c * 8;  /* x1 x2 x3 x4 y1 y2 y3 y4 */
 
       const double x = in[c];
@@ -202,6 +206,16 @@ double AmbixLoudnessMeter::GetIntegrated() const
 /* ---------------------------------------------------------------------------
  * Channel layout / weighting
  * -------------------------------------------------------------------------*/
+/* One past the last channel with a non-zero weight — i.e. how many leading
+ * channels actually have to be read. Trailing unweighted channels (padding
+ * past the known layouts) are pure cost, so they are never requested. */
+static int AmbixLoudnessLastWeightedChannel(const double *weights, int nch)
+{
+  for (int c = nch - 1; c >= 0; --c)
+    if (weights[c] != 0.0) return c + 1;
+  return 1;  /* nothing weighted: still ask for one channel rather than zero */
+}
+
 int AmbixLoudnessChannelSetup(int sourceChannels, double *weightsOut,
                               bool *isAmbisonicsOut)
 {
@@ -243,7 +257,7 @@ int AmbixLoudnessChannelSetup(int sourceChannels, double *weightsOut,
       1.0, 1.0, 1.0, 1.0       /* Ltf Rtf Ltb Rtb */
     };
     memcpy(weightsOut, w914, sizeof(w914));
-    return nch;
+    return AmbixLoudnessLastWeightedChannel(weightsOut, nch);
   }
 
   /* Dolby/SMPTE order up to 7.1.4 (12 ch):
@@ -259,5 +273,5 @@ int AmbixLoudnessChannelSetup(int sourceChannels, double *weightsOut,
   for (int c = 0; c < nch && c < 12; ++c)
     weightsOut[c] = wSurround[c];
 
-  return nch;
+  return AmbixLoudnessLastWeightedChannel(weightsOut, nch);
 }

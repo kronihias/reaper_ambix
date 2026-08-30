@@ -10,6 +10,11 @@
  *  correct thing to do for an ambisonic bed and much cheaper than ingesting
  *  every HOA channel.
  *
+ *  Measurement runs in chunks driven by a timer inside a modal progress
+ *  dialog, so REAPER stays responsive and the run can be cancelled. Everything
+ *  happens on the main thread — no worker threads, and therefore no REAPER API
+ *  calls from a background thread.
+ *
  *  No external dependencies: everything needed is in loudness.cpp and the
  *  REAPER API.
  * ==========================================================================*/
@@ -20,13 +25,16 @@
 #include "swell/swell.h"
 #endif
 
+#include "wdltypes.h"   /* WDL_DLGRET, GWLP_USERDATA / SetWindowLongPtr shims */
 #include "reaper_plugin.h"
+#include "resource.h"
 #include "loudness.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
 #include <vector>
 
 class AudioAccessor;
@@ -34,6 +42,7 @@ class AudioAccessor;
 /* imported by pcmsrc_ambix.cpp */
 extern void (*ShowConsoleMsg)(const char *msg);
 extern int  (*ShowMessageBox)(const char *msg, const char *title, int type);
+extern REAPER_PLUGIN_HINSTANCE g_hInst;
 
 /* ---------------------------------------------------------------------------
  * REAPER API imports (resolved in AmbixNormalizeInit)
@@ -68,6 +77,8 @@ static const char     *(*GetExtState)(const char *section, const char *key);
 static void            (*Undo_BeginBlock)(void);
 static void            (*Undo_EndBlock)(const char *descchange, int extraflags);
 static void            (*UpdateArrange)(void);
+static HWND            (*GetMainHwnd)(void);
+static bool            (*ValidatePtr2)(ReaProject *proj, void *pointer, const char *ctypename);
 
 #define EXTSTATE_SECTION "reaper_ambix"
 #define EXTSTATE_KEY     "normalize_target_lufs"
@@ -102,102 +113,349 @@ static bool IsEnvelopeActive(TrackEnvelope *env)
   return false;
 }
 
-/* Integrated loudness of a take, in LUFS, including the take/item volume
- * faders and (if present and active) the take volume envelope — the same set
- * of gain stages the normalization then adjusts.
+/* ---------------------------------------------------------------------------
+ * measurement job
  *
- * Returns AMBIX_LOUDNESS_NEGATIVE_INF for silence / unmeasurable material. */
-static double MeasureTakeLoudness(MediaItem *item, MediaItem_Take *take, int *channelsOut,
-                                  bool *isAmbisonicsOut)
+ * The work is split into chunks so a timer inside the progress dialog can
+ * drive it: each tick advances the analysis by a fixed slice of CPU time, then
+ * hands control back to the event loop so the bar repaints and Cancel works.
+ * -------------------------------------------------------------------------*/
+
+struct NormalizeEntry
 {
-  PCM_source *source = GetMediaItemTake_Source(take);
-  if (!source) return AMBIX_LOUDNESS_NEGATIVE_INF;
+  MediaItem      *item;
+  MediaItem_Take *take;
+  char            name[256];
+  const char     *skipReason;    /* non-NULL: nothing to measure, just report */
 
-  const int sourceChannels = GetMediaSourceNumChannels(source);
-  if (sourceChannels < 1) return AMBIX_LOUDNESS_NEGATIVE_INF;  /* MIDI take etc. */
+  /* measurement setup, resolved up front on the main thread */
+  int             sourceChannels;
+  bool            isAmbisonics;
+  int             nch;           /* channels actually read (1 for ambisonics) */
+  double          weights[AMBIX_LOUDNESS_MAX_CHANNELS];
+  int             srate;
+  double          fader;
+  TrackEnvelope  *volEnv;
+  double          itemPos;
+  double          audioStart, audioEnd;
 
-  double weights[AMBIX_LOUDNESS_MAX_CHANNELS];
-  bool isAmbisonics = false;
-  const int nch = AmbixLoudnessChannelSetup(sourceChannels, weights, &isAmbisonics);
-  if (channelsOut)     *channelsOut     = sourceChannels;
-  if (isAmbisonicsOut) *isAmbisonicsOut = isAmbisonics;
+  double          measured;      /* result, in LUFS */
+};
 
-  int srate = GetMediaSourceSampleRate(source);
-  if (srate < 8000) srate = 48000;
+struct NormalizeJob
+{
+  std::vector<NormalizeEntry> entries;
+  size_t                      cur;          /* entry being measured */
 
-  AudioAccessor *accessor = CreateTakeAudioAccessor(take);
-  if (!accessor) return AMBIX_LOUDNESS_NEGATIVE_INF;
+  /* state for the entry in progress */
+  AudioAccessor              *accessor;
+  AmbixLoudnessMeter         *meter;
+  double                      pos;
+  std::vector<double>         buf;
 
-  const double audioStart = GetAudioAccessorStartTime(accessor);
-  const double audioEnd   = GetAudioAccessorEndTime(accessor);
-  const double audioLen   = audioEnd - audioStart;
-  if (audioLen <= 0.0)
+  double                      totalSeconds; /* for the progress fraction */
+  double                      doneSeconds;
+  bool                        cancelled;
+  bool                        finished;
+
+  NormalizeJob() : cur(0), accessor(NULL), meter(NULL), pos(0.0),
+                   totalSeconds(0.0), doneSeconds(0.0),
+                   cancelled(false), finished(false) {}
+};
+
+static const int kBlockFrames = 8192;
+
+/* The progress dialog runs an event loop, so the project can change while a
+ * measurement is in flight — an item deleted mid-run would leave us holding a
+ * dangling pointer. Re-check before touching one. */
+static bool EntryStillValid(const NormalizeEntry &e)
+{
+  if (!ValidatePtr2) return true;   /* very old REAPER: nothing we can do */
+  return ValidatePtr2(NULL, (void *)e.item, "MediaItem*")
+      && ValidatePtr2(NULL, (void *)e.take, "MediaItem_Take*");
+}
+
+
+/* Open the accessor and meter for entries[cur]. False if it cannot be
+ * measured, in which case skipReason has been filled in. */
+static bool JobOpenEntry(NormalizeJob &job)
+{
+  NormalizeEntry &e = job.entries[job.cur];
+
+  if (!EntryStillValid(e))
   {
-    DestroyAudioAccessor(accessor);
-    return AMBIX_LOUDNESS_NEGATIVE_INF;
+    e.skipReason = "item was removed during analysis";
+    return false;
   }
 
-  /* An audio accessor extracts samples immediately pre-FX, so take FX are not
-   * part of the measurement, and neither are the gain stages below — fold those
-   * in by hand, since they are exactly what the normalization then adjusts. */
-  const double fader = GetMediaItemTakeInfo_Value(take, "D_VOL")
-                     * GetMediaItemInfo_Value(item, "D_VOL");
-
-  TrackEnvelope *volEnv = GetTakeEnvelopeByName ? GetTakeEnvelopeByName(take, "Volume") : NULL;
-  if (!IsEnvelopeActive(volEnv)) volEnv = NULL;
-  /* A take accessor reports times relative to the item start, while take
-   * envelopes are evaluated on the project timeline, so the item position has
-   * to be added back when looking the envelope up.
-   * https://github.com/reaper-oss/sws/issues/957 */
-  const double itemPos = GetMediaItemInfo_Value(item, "D_POSITION");
-
-  AmbixLoudnessMeter meter(nch, (double)srate, weights);
-
-  const int blockFrames = 8192;
-  std::vector<double> buf((size_t)blockFrames * nch);
-
-  double pos = audioStart;
-  while (pos < audioEnd)
+  job.accessor = CreateTakeAudioAccessor(e.take);
+  if (!job.accessor)
   {
-    int frames = (int)((audioEnd - pos) * srate + 0.5);
-    if (frames > blockFrames) frames = blockFrames;
-    if (frames < 1) break;
-
-    /* Asking for fewer channels than the source has yields the leading `nch`
-     * channels interleaved, which is what makes the ambisonic path cheap: for
-     * a third-order bed we request 1 channel and get W, instead of reading all
-     * 16. GetAudioAccessorSamples() stops writing once it passes the item end,
-     * so the buffer is zeroed first rather than left holding stale samples. */
-    memset(&buf[0], 0, (size_t)frames * nch * sizeof(double));
-    GetAudioAccessorSamples(accessor, srate, nch, pos, frames, &buf[0]);
-
-    double gain = fader;
-    if (volEnv)
-    {
-      double envValue = 1.0;
-      /* Evaluated once per block (~170 ms at 48 kHz); volume envelopes move
-       * far slower than that, and loudness is a long-window measure anyway. */
-      Envelope_Evaluate(volEnv, pos + itemPos, (double)srate, 1, &envValue, NULL, NULL, NULL);
-      gain *= envValue;
-    }
-
-    if (gain != 1.0)
-    {
-      const size_t n = (size_t)frames * nch;
-      for (size_t i = 0; i < n; ++i) buf[i] *= gain;
-    }
-
-    meter.AddFrames(&buf[0], frames);
-    pos += (double)frames / (double)srate;
+    e.skipReason = "could not read audio";
+    return false;
   }
 
-  DestroyAudioAccessor(accessor);
-  return meter.GetIntegrated();
+  e.audioStart = GetAudioAccessorStartTime(job.accessor);
+  e.audioEnd   = GetAudioAccessorEndTime(job.accessor);
+  if (e.audioEnd - e.audioStart <= 0.0)
+  {
+    DestroyAudioAccessor(job.accessor);
+    job.accessor = NULL;
+    e.skipReason = "empty";
+    return false;
+  }
+
+  job.meter = new AmbixLoudnessMeter(e.nch, (double)e.srate, e.weights);
+  job.pos   = e.audioStart;
+  job.buf.resize((size_t)kBlockFrames * e.nch);
+  return true;
+}
+
+static void JobCloseEntry(NormalizeJob &job)
+{
+  NormalizeEntry &e = job.entries[job.cur];
+
+  if (job.meter)
+  {
+    e.measured = job.meter->GetIntegrated();
+    if (e.measured <= AMBIX_LOUDNESS_NEGATIVE_INF)
+      e.skipReason = "silent or shorter than 400 ms";
+    delete job.meter;
+    job.meter = NULL;
+  }
+  if (job.accessor)
+  {
+    DestroyAudioAccessor(job.accessor);
+    job.accessor = NULL;
+  }
+  ++job.cur;
+}
+
+/* Advance the analysis by roughly `budgetSeconds` of CPU time. Returns true
+ * once every entry has been dealt with. */
+static bool JobStep(NormalizeJob &job, double budgetSeconds)
+{
+  const clock_t deadline = clock() + (clock_t)(budgetSeconds * (double)CLOCKS_PER_SEC);
+
+  while (job.cur < job.entries.size())
+  {
+    NormalizeEntry &e = job.entries[job.cur];
+
+    /* entries rejected up front (no take, locked, MIDI) need no work */
+    if (e.skipReason)
+    {
+      ++job.cur;
+      continue;
+    }
+
+    if (!job.accessor && !job.meter)
+    {
+      if (!JobOpenEntry(job))
+      {
+        ++job.cur;
+        continue;
+      }
+    }
+
+    while (job.pos < e.audioEnd)
+    {
+      int frames = (int)((e.audioEnd - job.pos) * e.srate + 0.5);
+      if (frames > kBlockFrames) frames = kBlockFrames;
+      if (frames < 1) break;
+
+      /* Asking for fewer channels than the source has yields the leading
+       * `nch` channels interleaved, which is what makes the ambisonic path
+       * cheap: a fifth-order bed is 36 channels but only W is requested.
+       * GetAudioAccessorSamples() stops writing once past the item end, so
+       * the buffer is zeroed rather than left holding stale samples. */
+      memset(&job.buf[0], 0, (size_t)frames * e.nch * sizeof(double));
+      GetAudioAccessorSamples(job.accessor, e.srate, e.nch, job.pos, frames, &job.buf[0]);
+
+      double gain = e.fader;
+      if (e.volEnv)
+      {
+        double envValue = 1.0;
+        /* Evaluated once per block (~170 ms at 48 kHz); volume envelopes move
+         * far slower than that, and loudness is a long-window measure. */
+        Envelope_Evaluate(e.volEnv, job.pos + e.itemPos, (double)e.srate, 1,
+                          &envValue, NULL, NULL, NULL);
+        gain *= envValue;
+      }
+
+      if (gain != 1.0)
+      {
+        const size_t n = (size_t)frames * e.nch;
+        for (size_t i = 0; i < n; ++i) job.buf[i] *= gain;
+      }
+
+      job.meter->AddFrames(&job.buf[0], frames);
+
+      const double advanced = (double)frames / (double)e.srate;
+      job.pos         += advanced;
+      job.doneSeconds += advanced;
+
+      if (clock() >= deadline) return false;  /* let the UI breathe */
+    }
+
+    JobCloseEntry(job);
+  }
+
+  job.finished = true;
+  return true;
+}
+
+static void JobAbort(NormalizeJob &job)
+{
+  if (job.meter)    { delete job.meter; job.meter = NULL; }
+  if (job.accessor) { DestroyAudioAccessor(job.accessor); job.accessor = NULL; }
+}
+
+/* ---------------------------------------------------------------------------
+ * progress dialog
+ * -------------------------------------------------------------------------*/
+#define AMBIX_PROGRESS_TIMER 1
+#define AMBIX_PROGRESS_RANGE 1000
+
+static WDL_DLGRET ProgressDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  NormalizeJob *job = (NormalizeJob *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+
+  switch (uMsg)
+  {
+    case WM_INITDIALOG:
+      SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
+      SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETRANGE, 0,
+                         MAKELPARAM(0, AMBIX_PROGRESS_RANGE));
+      SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETPOS, 0, 0);
+      SetDlgItemText(hwndDlg, IDC_PROGRESS_ITEM, "Preparing...");
+      /* A 1 ms timer effectively means "as often as the event loop allows";
+       * each tick does a bounded slice of work. */
+      SetTimer(hwndDlg, AMBIX_PROGRESS_TIMER, 1, NULL);
+    return 1;
+
+    case WM_TIMER:
+      if (wParam == AMBIX_PROGRESS_TIMER && job)
+      {
+        const bool done = JobStep(*job, 0.05);
+
+        if (job->cur < job->entries.size())
+        {
+          const NormalizeEntry &e = job->entries[job->cur];
+          char line[512];
+          snprintf(line, sizeof(line), "Item %d of %d: %s",
+                   (int)job->cur + 1, (int)job->entries.size(), e.name);
+          SetDlgItemText(hwndDlg, IDC_PROGRESS_ITEM, line);
+
+          if (e.isAmbisonics)
+            snprintf(line, sizeof(line), "%d channels, ambisonic — measuring W only",
+                     e.sourceChannels);
+          else if (e.nch < e.sourceChannels)
+            snprintf(line, sizeof(line), "%d channels — measuring the first %d",
+                     e.sourceChannels, e.nch);
+          else
+            snprintf(line, sizeof(line), "%d channel%s", e.sourceChannels,
+                     e.sourceChannels == 1 ? "" : "s");
+          SetDlgItemText(hwndDlg, IDC_PROGRESS_STATUS, line);
+        }
+
+        const double frac = (job->totalSeconds > 0.0)
+                          ? (job->doneSeconds / job->totalSeconds) : 1.0;
+        SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETPOS,
+                           (WPARAM)(int)(frac * AMBIX_PROGRESS_RANGE + 0.5), 0);
+
+        if (done)
+        {
+          KillTimer(hwndDlg, AMBIX_PROGRESS_TIMER);
+          EndDialog(hwndDlg, 1);
+        }
+      }
+    return 0;
+
+    case WM_COMMAND:
+      if (LOWORD(wParam) == IDCANCEL)
+      {
+        KillTimer(hwndDlg, AMBIX_PROGRESS_TIMER);
+        if (job)
+        {
+          job->cancelled = true;
+          JobAbort(*job);
+        }
+        EndDialog(hwndDlg, 0);
+      }
+    return 0;
+
+    case WM_DESTROY:
+      KillTimer(hwndDlg, AMBIX_PROGRESS_TIMER);
+    return 0;
+  }
+  return 0;
 }
 
 /* ---------------------------------------------------------------------------
  * the action
  * -------------------------------------------------------------------------*/
+
+/* Resolve everything the measurement needs, without reading any audio yet. */
+static void BuildEntry(NormalizeEntry &e, MediaItem *item, int index)
+{
+  memset(&e, 0, sizeof(e));
+  e.item     = item;
+  e.take     = GetActiveTake(item);
+  e.measured = AMBIX_LOUDNESS_NEGATIVE_INF;
+
+  const char *name = (e.take && GetTakeName) ? GetTakeName(e.take) : NULL;
+  if (name && *name) snprintf(e.name, sizeof(e.name), "%s", name);
+  else               snprintf(e.name, sizeof(e.name), "item %d", index + 1);
+
+  if (!e.take)
+  {
+    e.skipReason = "no active take";
+    return;
+  }
+
+  /* Locked items are left alone, matching REAPER's own item actions.
+   * C_LOCK is a bitmask; &1 is the lock bit. */
+  if (((int)GetMediaItemInfo_Value(item, "C_LOCK")) & 1)
+  {
+    e.skipReason = "item locked";
+    return;
+  }
+
+  PCM_source *source = GetMediaItemTake_Source(e.take);
+  if (!source)
+  {
+    e.skipReason = "no source";
+    return;
+  }
+
+  e.sourceChannels = GetMediaSourceNumChannels(source);
+  if (e.sourceChannels < 1)
+  {
+    e.skipReason = "not audio";   /* MIDI take, video, ... */
+    return;
+  }
+
+  e.nch = AmbixLoudnessChannelSetup(e.sourceChannels, e.weights, &e.isAmbisonics);
+
+  e.srate = GetMediaSourceSampleRate(source);
+  if (e.srate < 8000) e.srate = 48000;
+
+  /* An audio accessor extracts samples immediately pre-FX, so take FX are not
+   * part of the measurement, and neither are the gain stages below — fold
+   * those in by hand, since they are exactly what the normalization adjusts. */
+  e.fader = GetMediaItemTakeInfo_Value(e.take, "D_VOL")
+          * GetMediaItemInfo_Value(item, "D_VOL");
+
+  e.volEnv = GetTakeEnvelopeByName ? GetTakeEnvelopeByName(e.take, "Volume") : NULL;
+  if (!IsEnvelopeActive(e.volEnv)) e.volEnv = NULL;
+
+  /* A take accessor reports times relative to the item start, while take
+   * envelopes are evaluated on the project timeline, so the item position has
+   * to be added back when looking the envelope up.
+   * https://github.com/reaper-oss/sws/issues/957 */
+  e.itemPos = GetMediaItemInfo_Value(item, "D_POSITION");
+}
+
 static void NormalizeSelectedItems()
 {
   const int numSelected = CountSelectedMediaItems(NULL);
@@ -232,70 +490,94 @@ static void NormalizeSelectedItems()
   }
   SetExtState(EXTSTATE_SECTION, EXTSTATE_KEY, target, true);
 
+  /* --- gather, without touching audio yet --- */
+  NormalizeJob job;
+  job.entries.resize((size_t)numSelected);
+
+  size_t measurable = 0;
+  for (int i = 0; i < numSelected; ++i)
+  {
+    MediaItem *item = GetSelectedMediaItem(NULL, i);
+    NormalizeEntry &e = job.entries[(size_t)i];
+
+    if (!item)
+    {
+      memset(&e, 0, sizeof(e));
+      e.skipReason = "item disappeared";
+      snprintf(e.name, sizeof(e.name), "item %d", i + 1);
+      continue;
+    }
+
+    BuildEntry(e, item, i);
+    if (!e.skipReason)
+    {
+      ++measurable;
+      /* Item length drives the progress fraction. It is only an estimate of
+       * the accessor's range, but a progress bar needs no better. */
+      job.totalSeconds += GetMediaItemInfo_Value(item, "D_LENGTH");
+    }
+  }
+
+  if (!measurable)
+  {
+    ShowMessageBox("None of the selected items could be measured "
+                   "(no active take, locked, or not audio).",
+                   "ambiX: Normalize item loudness", 0);
+    return;
+  }
+
+  /* --- measure, with a progress dialog driving the work in chunks --- */
+  const int completed = (int)DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_AMBIX_PROGRESS),
+                                            GetMainHwnd ? GetMainHwnd() : NULL,
+                                            ProgressDlgProc, (LPARAM)&job);
+
+  if (!completed || job.cancelled)
+  {
+    /* Cancel means cancel: nothing is applied, so there is nothing to undo. */
+    ShowConsoleMsg("ambiX: normalization cancelled, no items changed\n\n");
+    return;
+  }
+
+  /* --- apply --- */
   Undo_BeginBlock();
 
   char line[1024];
-  snprintf(line, sizeof(line),
-           "ambiX: normalizing %d item%s to %.2f LUFS\n",
+  snprintf(line, sizeof(line), "ambiX: normalizing %d item%s to %.2f LUFS\n",
            numSelected, numSelected == 1 ? "" : "s", targetLufs);
   ShowConsoleMsg(line);
 
   int normalized = 0, skipped = 0;
 
-  for (int i = 0; i < numSelected; ++i)
+  for (size_t i = 0; i < job.entries.size(); ++i)
   {
-    MediaItem *item = GetSelectedMediaItem(NULL, i);
-    if (!item) continue;
+    const NormalizeEntry &e = job.entries[i];
 
-    MediaItem_Take *take = GetActiveTake(item);
-
-    char takeName[256];
-    const char *name = (take && GetTakeName) ? GetTakeName(take) : NULL;
-    if (name && *name) snprintf(takeName, sizeof(takeName), "%s", name);
-    else               snprintf(takeName, sizeof(takeName), "item %d", i + 1);
-
-    if (!take)
+    if (e.skipReason)
     {
-      snprintf(line, sizeof(line), "  %s: skipped (no active take)\n", takeName);
+      snprintf(line, sizeof(line), "  %s: skipped (%s)\n", e.name, e.skipReason);
       ShowConsoleMsg(line);
       ++skipped;
       continue;
     }
 
-    /* Locked items are left alone, matching REAPER's own item actions.
-     * C_LOCK is a bitmask; &1 is the lock bit. */
-    if (((int)GetMediaItemInfo_Value(item, "C_LOCK")) & 1)
+    if (!EntryStillValid(e))
     {
-      snprintf(line, sizeof(line), "  %s: skipped (item locked)\n", takeName);
+      snprintf(line, sizeof(line), "  %s: skipped (removed during analysis)\n", e.name);
       ShowConsoleMsg(line);
       ++skipped;
       continue;
     }
 
-    int channels = 0;
-    bool isAmbisonics = false;
-    const double measured = MeasureTakeLoudness(item, take, &channels, &isAmbisonics);
-
-    if (measured <= AMBIX_LOUDNESS_NEGATIVE_INF)
-    {
-      snprintf(line, sizeof(line),
-               "  %s: skipped (silent, too short, or not audio)\n", takeName);
-      ShowConsoleMsg(line);
-      ++skipped;
-      continue;
-    }
-
-    const double gainDb = targetLufs - measured;
-    const double oldVol = GetMediaItemTakeInfo_Value(take, "D_VOL");
-    /* Take volume may legitimately be negative (phase-inverted take); scale the
-     * magnitude and keep the sign. */
-    const double newVol = oldVol * pow(10.0, gainDb / 20.0);
-    SetMediaItemTakeInfo_Value(take, "D_VOL", newVol);
+    const double gainDb = targetLufs - e.measured;
+    const double oldVol = GetMediaItemTakeInfo_Value(e.take, "D_VOL");
+    /* Take volume may legitimately be negative (phase-inverted take); scale
+     * the magnitude and keep the sign. */
+    SetMediaItemTakeInfo_Value(e.take, "D_VOL", oldVol * pow(10.0, gainDb / 20.0));
 
     snprintf(line, sizeof(line),
              "  %s: %.1f LUFS -> %.1f LUFS (%+.2f dB, %d ch%s)\n",
-             takeName, measured, targetLufs, gainDb, channels,
-             isAmbisonics ? ", ambisonic - W measured" : "");
+             e.name, e.measured, targetLufs, gainDb, e.sourceChannels,
+             e.isAmbisonics ? ", ambisonic - W measured" : "");
     ShowConsoleMsg(line);
     ++normalized;
   }
@@ -349,6 +631,7 @@ bool AmbixNormalizeInit(reaper_plugin_info_t *rec)
   IMPAPI_OPT(Undo_BeginBlock);
   IMPAPI_OPT(Undo_EndBlock);
   IMPAPI_OPT(UpdateArrange);
+  IMPAPI_OPT(GetMainHwnd);
 
   if (missing) return false;  /* leave the rest of the plugin working */
 
@@ -357,6 +640,7 @@ bool AmbixNormalizeInit(reaper_plugin_info_t *rec)
   *((void **)&GetTakeEnvelopeByName) = (void *)rec->GetFunc("GetTakeEnvelopeByName");
   *((void **)&GetEnvelopeStateChunk) = (void *)rec->GetFunc("GetEnvelopeStateChunk");
   *((void **)&Envelope_Evaluate)     = (void *)rec->GetFunc("Envelope_Evaluate");
+  *((void **)&ValidatePtr2)          = (void *)rec->GetFunc("ValidatePtr2");
   if (!Envelope_Evaluate) GetTakeEnvelopeByName = NULL;
 
   g_normalizeCmd = rec->Register("command_id", (void *)"AMBIX_NORMALIZE_ITEM_LOUDNESS");

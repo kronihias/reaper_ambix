@@ -185,6 +185,43 @@ static void TestChannelWeighting()
                Measure(nch, 48000, w, segs), oneChannelRef + 10.0 * log10(11.82), 0.1);
   }
 
+  /* Only the channels that carry weight are requested. A wide non-ambisonic
+   * source is capped at the 12-channel layout, and a trailing unweighted
+   * channel is not read at all — this is what keeps the measurement cheap. */
+  {
+    double w[AMBIX_LOUDNESS_MAX_CHANNELS];
+    bool amb = false;
+    CheckEqualInt("20 ch: only the 12 weighted channels are read",
+                  AmbixLoudnessChannelSetup(20, w, &amb), 12);
+    CheckEqualInt("13 ch: only the 12 weighted channels are read",
+                  AmbixLoudnessChannelSetup(13, w, &amb), 12);
+    CheckEqualInt("6 ch (5.1): all six read, LFE among them",
+                  AmbixLoudnessChannelSetup(6, w, &amb), 6);
+    CheckEqualInt("14 ch (9.1.4): all fourteen read",
+                  AmbixLoudnessChannelSetup(14, w, &amb), 14);
+  }
+
+  /* An unweighted channel must not influence the reading no matter what it
+   * carries — the meter skips filtering it entirely, so a loud LFE is inert. */
+  {
+    double w[AMBIX_LOUDNESS_MAX_CHANNELS];
+    bool amb = false;
+    const int nch = AmbixLoudnessChannelSetup(6, w, &amb);
+
+    const std::vector<double> quietLfe = MakeSine(48000, 20, -23.0, 6, std::vector<int>{0, 1});
+    std::vector<const std::vector<double> *> a{&quietLfe};
+    const double withoutLfe = Measure(nch, 48000, w, a);
+
+    /* same L/R content, plus a full-scale LFE */
+    std::vector<double> loudLfe = MakeSine(48000, 20, -23.0, 6, std::vector<int>{0, 1});
+    const std::vector<double> lfe = MakeSine(48000, 20, 0.0, 6, std::vector<int>{3});
+    for (size_t i = 0; i < loudLfe.size(); ++i) loudLfe[i] += lfe[i];
+    std::vector<const std::vector<double> *> b{&loudLfe};
+    const double withLfe = Measure(nch, 48000, w, b);
+
+    CheckClose("full-scale LFE does not change the reading", withLfe, withoutLfe, 0.0);
+  }
+
   /* 9.1.4 (14 ch): Lss/Rss AND Ls/Rs are all in the 60-120 deg window ->
    * four G=1.41 channels. 1+1+1 + 4*1.41 + 1+1 + 1+1+1+1 = 14.64. */
   {

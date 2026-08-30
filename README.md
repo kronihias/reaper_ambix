@@ -27,6 +27,11 @@ item's active take, and sets the take volume so the item lands on that target.
 The measured and applied values are printed to the ReaScript console, and the
 whole run is a single undo point. The target is remembered between sessions.
 
+Analysis runs behind a progress dialog and can be cancelled — cancelling
+applies nothing. The work is done in small slices on the main thread rather
+than on a worker, so REAPER stays responsive without any of the API being
+called off-thread.
+
 The measurement is ITU-R BS.1770-4 (K-weighting, 400 ms blocks at 75 % overlap,
 absolute -70 LUFS and relative -10 LU gating), implemented locally in
 [src/loudness.cpp](src/loudness.cpp) — no external library is involved.
@@ -43,6 +48,11 @@ Channel handling follows BS.1770-5 Annex 3:
 Measuring only W for ambisonic material is both correct — per Peters & Epain
 (AES 154th, 2023) applying BS.1770 to W matches a full loudspeaker rendering —
 and much cheaper, since the other HOA channels never have to be read.
+
+Only channels that carry weight are read at all. A fifth-order bed is 36
+channels but costs one; an LFE is requested but never filtered; and a source
+wider than the 12-channel surround layout is capped there instead of running
+K-weighting over channels that contribute nothing.
 
 Note that a 4-channel item is read as first-order ambisonics rather than quad
 or LCRS, which is the useful default for this plugin but worth knowing if you
