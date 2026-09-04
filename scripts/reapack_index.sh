@@ -28,7 +28,10 @@ if ! command -v reapack-index >/dev/null 2>&1; then
     exit 1
 fi
 
-reapack-index --name 'reaper_ambix'
+# --no-commit: this repo commits index.xml by hand (see README, "Cutting a
+# release"), and the interactive prompt reapack-index shows otherwise dies
+# with Errno::ENODEV when stdin is not a terminal.
+reapack-index --name 'reaper_ambix' --no-commit
 
 echo ""
 echo "index.xml regenerated - review the diff and commit it."
