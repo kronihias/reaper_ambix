@@ -134,6 +134,7 @@ set (reaper_ambix_sources
 	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsink_ambix.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/loudness.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/normalize_action.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/channelcount_action.cpp
 	)
 
 IF(WIN32)

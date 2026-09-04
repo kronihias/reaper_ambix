@@ -1,5 +1,5 @@
-@description ambiX (.ambix) file support for REAPER, plus a loudness normalize action
-@version 0.2.0
+@description ambiX (.ambix) file support for REAPER, plus loudness-normalize and track-channel-count actions
+@version 0.3.0
 @author Matthias Kronlachner
 @metapackage
 @provides
@@ -17,7 +17,7 @@
   uncompressed (CAF container) or with WavPack lossless compression; reading
   auto-detects the container.
 
-  It also adds an action to the main action list:
+  It also adds two actions to the main action list:
 
   **ambiX: Normalize selected item(s) to target loudness (LUFS)...**
 
@@ -26,13 +26,16 @@
   measured on the W channel alone; surround beds use the BS.1770-5 Annex 3
   channel weighting up to 9.1.4.
 
+  **ambiX: Set channel count of selected track(s) and their sends...**
+
+  Sets the track channel count on every selected track and resizes the sends
+  that carried those tracks' full width, so a whole encoder-into-bus chain
+  changes ambisonic order in one step. Partial routings (mono sends, offset
+  taps, hardware outputs) are left alone.
+
   Restart REAPER after installing or updating.
 @changelog
-  - Distribute through ReaPack (raw per-platform binaries on GitHub releases)
-  - New action: normalize selected item(s) to a target integrated loudness
-    (LUFS), measured locally to ITU-R BS.1770-4. Ambisonic items are measured
-    on the W channel alone; surround beds use the BS.1770-5 Annex 3 weighting
-    up to 9.1.4
-  - Analysis runs behind a progress dialog and can be cancelled
-  - Linux (x86_64 + aarch64) and Windows ARM64 builds
-  - macOS builds are now universal (Apple Silicon + Intel)
+  - New action: set the channel count of the selected tracks and resize the
+    sends that carried their full width, for changing ambisonic order across a
+    whole encoder-into-bus chain in one step. Native port of
+    change_channel_count.py from the ambix plug-in suite - no Python needed

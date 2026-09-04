@@ -7,7 +7,8 @@ ambiX (Ambisonics eXchangeable) specification [1].
 Output can be written uncompressed (CAF container) or with WavPack lossless
 compression. Reading auto-detects the container from the file's magic bytes.
 
-It also adds a loudness normalization action — see [Actions](#actions) below.
+It also adds two actions to REAPER's main action list — see
+[Actions](#actions) below.
 
 [1] C. Nachbar, F. Zotter, E. Deleflie, A. Sontacchi. *ambiX – A Suggested
 Ambisonics Format.* Proceedings of the Ambisonics Symposium 2011, Lexington,
@@ -18,9 +19,9 @@ KY, June 2–3, 2011.
 Actions
 -------
 
-The extension registers one action in REAPER's main action list:
+The extension registers two actions in REAPER's main action list.
 
-**ambiX: Normalize selected item(s) to target loudness (LUFS)...**
+### ambiX: Normalize selected item(s) to target loudness (LUFS)...
 
 It asks for a target level, measures the integrated loudness of each selected
 item's active take, and sets the take volume so the item lands on that target.
@@ -57,6 +58,41 @@ K-weighting over channels that contribute nothing.
 Note that a 4-channel item is read as first-order ambisonics rather than quad
 or LCRS, which is the useful default for this plugin but worth knowing if you
 point the action at a non-ambisonic 4-channel file.
+
+### ambiX: Set channel count of selected track(s) and their sends...
+
+Sets the track channel count on every selected track and resizes the sends that
+carried those tracks' full width, so a whole encoder-into-bus chain changes
+ambisonic order in one step. Working at first order and switching to fifth just
+before rendering saves a lot of CPU; doing it by hand across a large session is
+tedious and easy to get wrong.
+
+Select the bus **and** every track feeding it, run the action, and enter the
+channel count. Ambisonic orders are the perfect squares — 4, 9, 16, 25, 36, 49,
+64, 81, 100, 121 — and REAPER only has even channel counts, so an odd order is
+rounded up to the next even number. Up to 128 channels (REAPER 7; older
+versions clamp to 64). The count is remembered between sessions and the whole
+run is a single undo point.
+
+A send is resized only if it carried its source track's entire width from
+channel 1 into the destination's channel 1. Mono sends, sends starting at a
+channel offset, and sends that only ever carried part of the track — a stereo
+monitor tap, a 10-channel bed feed off a 128-channel track — keep the width
+they have. Hardware outputs are never touched.
+
+Only sends *out of* selected tracks are resized. A receive from a track you did
+not select comes from a track whose width is not changing, so touching it would
+break the routing rather than follow it. If a resized send now feeds a track
+narrower than the new count, the console says so by name — that is usually a
+track you forgot to select.
+
+This is a native port of
+[`change_channel_count.py`](https://github.com/kronihias/ambix/blob/master/reaper_tools/change_channel_count.py)
+from the ambix plug-in suite (Matthias Kronlachner and Daryl Pierce). The Python
+original needed a configured Python interpreter and edited the track state chunk
+with regular expressions; this uses `I_NCHAN` and `I_SRCCHAN`/`I_DSTCHAN` and
+ships inside the extension, so it installs with reaper_ambix and needs no
+interpreter.
 
 
 Screenshots

@@ -76,6 +76,10 @@ extern pcmsink_register_ext_t mySinkRegStruct; // from pcmsink_ambix.cpp
 // plugin (read/write support) keeps working in that case.
 extern bool AmbixNormalizeInit(reaper_plugin_info_t *rec);
 
+// from channelcount_action.cpp - registers the "set track channel count"
+// action. Same deal: a false return leaves the rest of the plugin working.
+extern bool AmbixChannelCountInit(reaper_plugin_info_t *rec);
+
 const char *(*GetExePath)();
 
 extern "C"
@@ -126,6 +130,9 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
 
         if (!AmbixNormalizeInit(rec))
           printf("Failed to register the normalize-loudness action\n");
+
+        if (!AmbixChannelCountInit(rec))
+          printf("Failed to register the track-channel-count action\n");
 
         return 1;
     }
