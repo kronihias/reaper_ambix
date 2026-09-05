@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="reaper_ambix" commit="fb8e8a5a384da708d7684246d13849548e0b6cc2">
+<index version="1" name="reaper_ambix" commit="f777ca513f9379d35f2cb80527bfbee73d3e979d">
   <category name="Extensions">
     <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions">
       <metadata>
@@ -81,7 +81,8 @@
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel0 \b \fs34 REAPER Live\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 A touch-friendly mixer and transport for REAPER's built-in web server, meant for a phone or tablet propped next to you rather than for a desktop browser.\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} One strip per track plus the master: name, track colour, level meter and volume fader\par}
-{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} {\b Everything that can bite you starts locked.} MUTE, SOLO and the transport are dimmed and inert until you open the matching padlock - {\b Mute/Solo} on the left of the transport bar, {\b Transport} on the right. They stay visible while locked, so which tracks are muted or soloed and whether REAPER is rolling can still be read at a glance. Each choice is remembered, and anything unexpected (a reload, a browser that refuses storage) leaves you locked rather than live\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} {\b Padlocks for the things that can bite you.} MUTE/SOLO and the transport start {\b locked}; the faders start {\b unlocked}, since riding levels is the usual reason the tablet is there. Locked controls go dim and inert but stay visible, so mute, solo and play state can still be read at a glance\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} {\b Per-track fader locks.} Each strip header has its own padlock, for pinning the channels that must not move - a playback stem, a safety mic - while the rest stay live. The global fader lock overrides them\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Faders drag {\b relatively}, so putting a finger down never jumps the level to where you touched. Double-tap resets a fader to 0 dB\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Transport bar with go-to-start, stop, pause, play, record and repeat, plus the play position and time signature\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Shows a banner and dims the mixer when REAPER stops answering, so a dead connection is obvious instead of looking like a frozen desk\sa180\par}
@@ -112,6 +113,14 @@
   and record state can still be read at a glance. Both choices are
   remembered per browser]]></changelog>
         <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/fb8e8a5a384da708d7684246d13849548e0b6cc2/WebInterfaces/reaper_mixer_live.html</source>
+      </version>
+      <version name="0.4.0" author="Matthias Kronlachner" time="2026-09-05T06:17:48Z">
+        <changelog><![CDATA[- Add a global fader lock (unlocked by default) and a per-track fader lock
+  in each strip header; the global lock wins over the per-track ones
+- Group the three padlocks together in the transport bar, and wrap the bar
+  on phone-width screens so the transport buttons can no longer be pushed
+  off the edge]]></changelog>
+        <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/f777ca513f9379d35f2cb80527bfbee73d3e979d/WebInterfaces/reaper_mixer_live.html</source>
       </version>
     </reapack>
   </category>
