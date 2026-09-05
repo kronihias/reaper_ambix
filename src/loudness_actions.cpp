@@ -1,9 +1,20 @@
 /* ============================================================================
- *  normalize_action.cpp — "ambiX: Normalize selected item(s) ... " action.
+ *  loudness_actions.cpp — the two BS.1770 loudness actions.
  *
- *  Measures each selected item's active take with the local BS.1770-4
- *  implementation in loudness.cpp and scales the take volume so the integrated
- *  loudness lands on the user's target.
+ *    ambiX: Normalize selected item(s) to target loudness (LUFS)...
+ *    ambiX: Measure loudness of selected item(s)
+ *
+ *  Both measure each selected item's active take with the local BS.1770-4
+ *  implementation in loudness.cpp. The first then scales the take volume so
+ *  the integrated loudness lands on the user's target; the second only reports
+ *  what it found and changes nothing, which is what you want when checking a
+ *  delivery rather than fixing it.
+ *
+ *  REAPER has its own item loudness analysis, but no ambisonic mode: it
+ *  measures every channel of a 36-channel fifth-order bed rather than W alone.
+ *  Reporting the same number the normalize action drives to a target is the
+ *  point of the measure-only action; it is not a general replacement for the
+ *  host's analysis, which also gives peak and LRA.
  *
  *  Ambisonic sources (channel count a perfect square >= 4) are measured on the
  *  W channel alone — see AmbixLoudnessChannelSetup() — which is both the
@@ -46,7 +57,7 @@ extern int  (*ShowMessageBox)(const char *msg, const char *title, int type);
 extern REAPER_PLUGIN_HINSTANCE g_hInst;
 
 /* ---------------------------------------------------------------------------
- * REAPER API imports (resolved in AmbixNormalizeInit)
+ * REAPER API imports (resolved in AmbixLoudnessActionsInit)
  * -------------------------------------------------------------------------*/
 static int             (*CountSelectedMediaItems)(ReaProject *proj);
 static MediaItem      *(*GetSelectedMediaItem)(ReaProject *proj, int selitem);
@@ -84,7 +95,10 @@ static bool            (*ValidatePtr2)(ReaProject *proj, void *pointer, const ch
 #define EXTSTATE_SECTION "reaper_ambix"
 #define EXTSTATE_KEY     "normalize_target_lufs"
 
+#define MEASURE_TITLE "ambiX: Measure item loudness"
+
 static int g_normalizeCmd = 0;
+static int g_measureCmd   = 0;
 
 /* ---------------------------------------------------------------------------
  * helpers
@@ -457,6 +471,52 @@ static void BuildEntry(NormalizeEntry &e, MediaItem *item, int index)
   e.itemPos = GetMediaItemInfo_Value(item, "D_POSITION");
 }
 
+/* Build a job from the current item selection and run it behind the progress
+ * dialog. False means there is nothing to report and the caller should return:
+ * either nothing was measurable (a message box has been shown) or the user
+ * cancelled (job.cancelled says which). */
+static bool GatherAndMeasure(NormalizeJob &job, int numSelected, const char *title)
+{
+  job.entries.resize((size_t)numSelected);
+
+  size_t measurable = 0;
+  for (int i = 0; i < numSelected; ++i)
+  {
+    MediaItem *item = GetSelectedMediaItem(NULL, i);
+    NormalizeEntry &e = job.entries[(size_t)i];
+
+    if (!item)
+    {
+      memset(&e, 0, sizeof(e));
+      e.skipReason = "item disappeared";
+      snprintf(e.name, sizeof(e.name), "item %d", i + 1);
+      continue;
+    }
+
+    BuildEntry(e, item, i);
+    if (!e.skipReason)
+    {
+      ++measurable;
+      /* Item length drives the progress fraction. It is only an estimate of
+       * the accessor's range, but a progress bar needs no better. */
+      job.totalSeconds += GetMediaItemInfo_Value(item, "D_LENGTH");
+    }
+  }
+
+  if (!measurable)
+  {
+    ShowMessageBox("None of the selected items could be measured "
+                   "(no active take, locked, or not audio).", title, 0);
+    return false;
+  }
+
+  const int completed = (int)DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_AMBIX_PROGRESS),
+                                            GetMainHwnd ? GetMainHwnd() : NULL,
+                                            ProgressDlgProc, (LPARAM)&job);
+
+  return completed && !job.cancelled;
+}
+
 static void NormalizeSelectedItems()
 {
   const int numSelected = CountSelectedMediaItems(NULL);
@@ -491,51 +551,12 @@ static void NormalizeSelectedItems()
   }
   SetExtState(EXTSTATE_SECTION, EXTSTATE_KEY, target, true);
 
-  /* --- gather, without touching audio yet --- */
   NormalizeJob job;
-  job.entries.resize((size_t)numSelected);
-
-  size_t measurable = 0;
-  for (int i = 0; i < numSelected; ++i)
-  {
-    MediaItem *item = GetSelectedMediaItem(NULL, i);
-    NormalizeEntry &e = job.entries[(size_t)i];
-
-    if (!item)
-    {
-      memset(&e, 0, sizeof(e));
-      e.skipReason = "item disappeared";
-      snprintf(e.name, sizeof(e.name), "item %d", i + 1);
-      continue;
-    }
-
-    BuildEntry(e, item, i);
-    if (!e.skipReason)
-    {
-      ++measurable;
-      /* Item length drives the progress fraction. It is only an estimate of
-       * the accessor's range, but a progress bar needs no better. */
-      job.totalSeconds += GetMediaItemInfo_Value(item, "D_LENGTH");
-    }
-  }
-
-  if (!measurable)
-  {
-    ShowMessageBox("None of the selected items could be measured "
-                   "(no active take, locked, or not audio).",
-                   "ambiX: Normalize item loudness", 0);
-    return;
-  }
-
-  /* --- measure, with a progress dialog driving the work in chunks --- */
-  const int completed = (int)DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_AMBIX_PROGRESS),
-                                            GetMainHwnd ? GetMainHwnd() : NULL,
-                                            ProgressDlgProc, (LPARAM)&job);
-
-  if (!completed || job.cancelled)
+  if (!GatherAndMeasure(job, numSelected, "ambiX: Normalize item loudness"))
   {
     /* Cancel means cancel: nothing is applied, so there is nothing to undo. */
-    ShowConsoleMsg("ambiX: normalization cancelled, no items changed\n\n");
+    if (job.cancelled)
+      ShowConsoleMsg("ambiX: normalization cancelled, no items changed\n\n");
     return;
   }
 
@@ -590,11 +611,91 @@ static void NormalizeSelectedItems()
   UpdateArrange();
 }
 
+/* ---------------------------------------------------------------------------
+ * measure only
+ *
+ * Same measurement as the normalize action, including the take fader and an
+ * active take volume envelope, so the number reported is the loudness of the
+ * item as it currently plays (pre track FX) rather than of the raw file. That
+ * is deliberately the same quantity the normalize action drives to a target,
+ * so running measure after normalize reads back what you asked for.
+ * -------------------------------------------------------------------------*/
+
+static void MeasureSelectedItems()
+{
+  const int numSelected = CountSelectedMediaItems(NULL);
+  if (numSelected < 1)
+  {
+    ShowMessageBox("Select at least one media item first.",
+                   MEASURE_TITLE, 0);
+    return;
+  }
+
+  NormalizeJob job;
+  if (!GatherAndMeasure(job, numSelected, MEASURE_TITLE))
+  {
+    if (job.cancelled) ShowConsoleMsg("ambiX: measurement cancelled\n\n");
+    return;
+  }
+
+  char line[1024];
+  snprintf(line, sizeof(line), "ambiX: integrated loudness of %d item%s (ITU-R BS.1770-4)\n",
+           numSelected, numSelected == 1 ? "" : "s");
+  ShowConsoleMsg(line);
+
+  int measured = 0, skipped = 0;
+  double sum = 0.0, quietest = 0.0, loudest = 0.0;
+
+  for (size_t i = 0; i < job.entries.size(); ++i)
+  {
+    const NormalizeEntry &e = job.entries[i];
+
+    if (e.skipReason)
+    {
+      snprintf(line, sizeof(line), "  %s: skipped (%s)\n", e.name, e.skipReason);
+      ShowConsoleMsg(line);
+      ++skipped;
+      continue;
+    }
+
+    snprintf(line, sizeof(line), "  %s: %.1f LUFS (%d ch%s)\n",
+             e.name, e.measured, e.sourceChannels,
+             e.isAmbisonics ? ", ambisonic - W measured" : "");
+    ShowConsoleMsg(line);
+
+    if (!measured || e.measured < quietest) quietest = e.measured;
+    if (!measured || e.measured > loudest)  loudest   = e.measured;
+    sum += e.measured;
+    ++measured;
+  }
+
+  if (measured > 1)
+  {
+    /* A plain mean of LUFS values, not an energy sum: this is a spread
+     * indicator for a set of deliverables, not the loudness of the set played
+     * together. The range is the number that matters when checking whether a
+     * batch is consistent. */
+    snprintf(line, sizeof(line),
+             "ambiX: %d measured, %d skipped - quietest %.1f, loudest %.1f, "
+             "spread %.1f LU, mean %.1f LUFS\n\n",
+             measured, skipped, quietest, loudest, loudest - quietest,
+             sum / (double)measured);
+  }
+  else
+  {
+    snprintf(line, sizeof(line), "ambiX: %d measured, %d skipped\n\n",
+             measured, skipped);
+  }
+  ShowConsoleMsg(line);
+
+  /* Nothing was changed, so no undo point and no arrange redraw. */
+}
+
 static bool hookCommandProc(int command, int flag)
 {
-  if (!g_normalizeCmd || command != g_normalizeCmd) return false;
-  NormalizeSelectedItems();
-  return true;
+  if (g_normalizeCmd && command == g_normalizeCmd) { NormalizeSelectedItems(); return true; }
+  if (g_measureCmd   && command == g_measureCmd)   { MeasureSelectedItems();   return true; }
+  return false;
 }
 
 static gaccel_register_t g_normalizeAccel =
@@ -603,12 +704,19 @@ static gaccel_register_t g_normalizeAccel =
   "ambiX: Normalize selected item(s) to target loudness (LUFS)..."
 };
 
+/* No ellipsis: this one asks for nothing, it just measures and reports. */
+static gaccel_register_t g_measureAccel =
+{
+  { 0, 0, 0 },
+  "ambiX: Measure loudness of selected item(s) (LUFS)"
+};
+
 /* ---------------------------------------------------------------------------
  * registration
  * -------------------------------------------------------------------------*/
 #define IMPAPI_OPT(x) if (!((*((void **)&(x)) = (void *)rec->GetFunc(#x)))) ++missing;
 
-bool AmbixNormalizeInit(reaper_plugin_info_t *rec)
+bool AmbixLoudnessActionsInit(reaper_plugin_info_t *rec)
 {
   int missing = 0;
 
@@ -656,6 +764,17 @@ bool AmbixNormalizeInit(reaper_plugin_info_t *rec)
 
   g_normalizeAccel.accel.cmd = g_normalizeCmd;
   if (!rec->Register("gaccel", &g_normalizeAccel)) return false;
+
+  /* The measure action shares every import above, so it either registers
+   * alongside the normalize action or not at all. */
+  g_measureCmd = rec->Register("command_id", (void *)"AMBIX_MEASURE_ITEM_LOUDNESS");
+  if (g_measureCmd)
+  {
+    g_measureAccel.accel.cmd = g_measureCmd;
+    if (!rec->Register("gaccel", &g_measureAccel)) g_measureCmd = 0;
+  }
+
+  /* One hook serves both command ids. */
   if (!rec->Register("hookcommand", (void *)hookCommandProc)) return false;
 
   return true;

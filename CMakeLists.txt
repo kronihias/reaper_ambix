@@ -91,6 +91,23 @@ if(REAPER_AMBIX_BUILD_TESTS)
     endif()
 
     add_test(NAME loudness COMMAND test_loudness)
+
+    # The FuMa conversion is pure arithmetic over a lookup table, so it needs
+    # neither REAPER nor libambix. Deliberately NOT tested against libambix's
+    # AMBIX_MATRIX_FUMA, which is wrong - see src/fuma.h.
+    add_executable(test_fuma
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fuma.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/fuma.cpp)
+    target_include_directories(test_fuma PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set_target_properties(test_fuma PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
+    if(NOT MSVC)
+        target_compile_options(test_fuma PRIVATE -fsigned-char)
+    else()
+        target_compile_definitions(test_fuma PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_test(NAME fuma COMMAND test_fuma)
 endif()
 
 ################################################
@@ -133,8 +150,10 @@ set (reaper_ambix_sources
 	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsrc_ambix.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsink_ambix.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/loudness.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/src/normalize_action.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/loudness_actions.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/channelcount_action.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/convert_actions.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/fuma.cpp
 	)
 
 IF(WIN32)

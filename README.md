@@ -7,7 +7,7 @@ ambiX (Ambisonics eXchangeable) specification [1].
 Output can be written uncompressed (CAF container) or with WavPack lossless
 compression. Reading auto-detects the container from the file's magic bytes.
 
-It also adds two actions to REAPER's main action list — see
+It also adds five actions to REAPER's main action list — see
 [Actions](#actions) below.
 
 [1] C. Nachbar, F. Zotter, E. Deleflie, A. Sontacchi. *ambiX – A Suggested
@@ -19,7 +19,7 @@ KY, June 2–3, 2011.
 Actions
 -------
 
-The extension registers two actions in REAPER's main action list.
+The extension registers five actions in REAPER's main action list.
 
 ### ambiX: Normalize selected item(s) to target loudness (LUFS)...
 
@@ -59,6 +59,19 @@ Note that a 4-channel item is read as first-order ambisonics rather than quad
 or LCRS, which is the useful default for this plugin but worth knowing if you
 point the action at a non-ambisonic 4-channel file.
 
+### ambiX: Measure loudness of selected item(s) (LUFS)
+
+The same measurement as above, reported to the ReaScript console and changing
+nothing. For more than one item it also prints the quietest, the loudest and
+the spread, which is the number that matters when checking whether a batch of
+deliverables is consistent.
+
+REAPER has its own item loudness analysis, and it also gives peak and LRA — but
+it has no ambisonic mode, so it measures every channel of a 36-channel bed
+rather than W alone. This action reports exactly the quantity the normalize
+action drives to a target, take gain and volume envelope included, so running
+it after a normalize reads back the target you asked for.
+
 ### ambiX: Set channel count of selected track(s) and their sends...
 
 Sets the track channel count on every selected track and resizes the sends that
@@ -93,6 +106,42 @@ original needed a configured Python interpreter and edited the track state chunk
 with regular expressions; this uses `I_NCHAN` and `I_SRCCHAN`/`I_DSTCHAN` and
 ships inside the extension, so it installs with reaper_ambix and needs no
 interpreter.
+
+### ambiX: Convert selected item(s) to .ambix file(s)...
+
+Writes each selected item out as an `.ambix` file, next to the item's source
+media file and named after the take. The render dialog can already produce
+`.ambix`, but only for what the master bus is playing; this works item by item,
+which is what you want when a session holds a folder's worth of deliverables.
+
+What gets written is the **item**, not the whole source file: its own trimmed
+extent, with take gain applied, pre track FX. So two items cut out of one long
+recording become two files, and "normalize, then convert" composes the way you
+would expect. Existing files are never clobbered silently — a `-1`, `-2` suffix
+is added unless you ask for overwrite.
+
+A take needs a complete ambisonic set, `(N+1)^2` channels, since that is what
+the ambiX basic format stores. WavPack lossless compression is on by default.
+
+### ambiX: Convert selected item(s) from FuMa to ambiX...
+
+Converts Furse-Malham (classic B-format) material to the ambiX convention —
+ACN channel ordering, SN3D normalization — writing an `.ambix` file the same
+way as the action above and, optionally, adding it to the item as an extra
+take. The original take stays active and untouched, so nothing is destroyed.
+
+FuMa is defined up to third order, so takes of 1, 3, 4, 5, 6, 7, 8, 9, 11 or 16
+channels are accepted; the reduced sets (`WXY`, `WXYUV`, …) expand to the full
+`(N+1)^2` set with the components FuMa does not carry left silent.
+
+The conversion follows section 4.2.1 of the ambiX paper. It deliberately does
+**not** use libambix's `AMBIX_MATRIX_FUMA`, which is wrong in two ways: it
+emits the inverse of its own (correct) ordering table, so first-order X lands
+in the ambiX Z slot, and it applies a Condon-Shortley `(-1)^m` sign that the
+ambiX paper explicitly rejects. Its `AMBIX_MATRIX_TO_FUMA` counterpart is
+inverted the same way, so a FuMa → ambiX → FuMa round trip is a clean identity
+and libambix's own test suite does not catch it. See
+[src/fuma.cpp](src/fuma.cpp) and [tests/test_fuma.cpp](tests/test_fuma.cpp).
 
 
 Screenshots
@@ -198,12 +247,21 @@ folder REAPER loads from unless you asked for it; only the dev tree opts in.
 Tests
 -----
 
-The loudness measurement has no REAPER dependency and is covered by a standalone
-test suite ([tests/test_loudness.cpp](tests/test_loudness.cpp)): the EBU Tech 3341
+Two suites run without REAPER.
+
+[tests/test_loudness.cpp](tests/test_loudness.cpp) covers the loudness
+measurement: the EBU Tech 3341
 integrated-loudness compliance cases, the BS.1770-5 channel weightings, the
 ambisonic layout detection, sample-rate independence, and a check that the
 derived K-weighting coefficients reproduce the values tabulated in BS.1770-4 at
 48 kHz.
+
+[tests/test_fuma.cpp](tests/test_fuma.cpp) covers the FuMa conversion: the
+paper's first-order matrix entry by entry, the ordering and maxN gains for
+orders 2 and 3, the reduced FuMa sets, the channel counts that must be
+rejected, and the absence of any negative coefficient. It exists because the
+obvious shortcut — libambix's `AMBIX_MATRIX_FUMA` — is wrong and its own
+round-trip test does not notice.
 
 `REAPER_AMBIX_BUILD_PLUGIN=OFF` skips the extension itself, so the tests build
 without the vendored submodules — a plain `git clone` is enough:

@@ -1,5 +1,5 @@
-@description ambiX (.ambix) file support for REAPER, plus loudness-normalize and track-channel-count actions
-@version 0.3.0
+@description ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions
+@version 0.4.0
 @author Matthias Kronlachner
 @metapackage
 @provides
@@ -17,7 +17,7 @@
   uncompressed (CAF container) or with WavPack lossless compression; reading
   auto-detects the container.
 
-  It also adds two actions to the main action list:
+  It also adds five actions to the main action list:
 
   **ambiX: Normalize selected item(s) to target loudness (LUFS)...**
 
@@ -26,6 +26,12 @@
   measured on the W channel alone; surround beds use the BS.1770-5 Annex 3
   channel weighting up to 9.1.4.
 
+  **ambiX: Measure loudness of selected item(s) (LUFS)**
+
+  The same measurement, reported to the console and changing nothing, with the
+  quietest/loudest/spread across a batch. Unlike REAPER's own item loudness
+  analysis it knows about ambisonics.
+
   **ambiX: Set channel count of selected track(s) and their sends...**
 
   Sets the track channel count on every selected track and resizes the sends
@@ -33,9 +39,27 @@
   changes ambisonic order in one step. Partial routings (mono sends, offset
   taps, hardware outputs) are left alone.
 
+  **ambiX: Convert selected item(s) to .ambix file(s)...**
+
+  Writes each selected item out as an .ambix file next to its source media,
+  item by item rather than through the render dialog. Optional WavPack lossless
+  compression.
+
+  **ambiX: Convert selected item(s) from FuMa to ambiX...**
+
+  Converts Furse-Malham (classic B-format) material to ACN/SN3D, per section
+  4.2.1 of the ambiX paper, up to third order including the reduced FuMa sets.
+  The result can be added to the item as an extra take.
+
   Restart REAPER after installing or updating.
 @changelog
-  - New action: set the channel count of the selected tracks and resize the
-    sends that carried their full width, for changing ambisonic order across a
-    whole encoder-into-bus chain in one step. Native port of
-    change_channel_count.py from the ambix plug-in suite - no Python needed
+  - New action: measure the loudness of the selected items and report it,
+    changing nothing - the ambisonic-aware counterpart to REAPER's own item
+    loudness analysis
+  - New action: convert the selected items to .ambix files, item by item
+    instead of through the render dialog
+  - New action: convert Furse-Malham (B-format) items to the ambiX convention
+    (ACN/SN3D), up to third order including the reduced FuMa sets. Implemented
+    from the ambiX paper rather than libambix's AMBIX_MATRIX_FUMA, which routes
+    first-order X into the ambiX Z slot and adds Condon-Shortley signs the
+    paper rejects

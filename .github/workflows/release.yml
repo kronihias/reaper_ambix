@@ -19,13 +19,15 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Build and run the loudness tests
+    - name: Build and run the test suites
       run: |
         # BUILD_PLUGIN=OFF keeps this configure clear of WDL/WavPack/libambix,
         # so the job does not need a submodule checkout to run the tests.
         cmake -S . -B _build_tests -DREAPER_AMBIX_BUILD_TESTS=ON \
               -DREAPER_AMBIX_BUILD_PLUGIN=OFF
-        cmake --build _build_tests --target test_loudness -j "$(nproc)"
+        # no --target: with BUILD_PLUGIN=OFF this tree is only the test
+        # binaries, and ctest below runs every one of them.
+        cmake --build _build_tests -j "$(nproc)"
         ctest --test-dir _build_tests --output-on-failure
 
   build-windows:

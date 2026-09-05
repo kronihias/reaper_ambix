@@ -10,7 +10,7 @@ on:
 
 jobs:
   test:
-    name: Loudness tests
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -23,7 +23,10 @@ jobs:
               -DREAPER_AMBIX_BUILD_PLUGIN=OFF
 
     - name: Build
-      run: cmake --build _build_tests --target test_loudness -j "$(nproc)"
+      run: |
+        # No --target: with BUILD_PLUGIN=OFF this tree holds only the test
+        # binaries, and ctest below runs every one of them.
+        cmake --build _build_tests -j "$(nproc)"
 
     - name: Run ctest
       run: ctest --test-dir _build_tests --output-on-failure
