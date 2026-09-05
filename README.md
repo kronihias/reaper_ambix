@@ -172,16 +172,36 @@ repeat, the play position and the time signature.
 
 Three details that matter in use:
 
-- **Everything that can bite you starts locked.** MUTE, SOLO and the transport
-  go dim and inert until you open the matching padlock — **Mute/Solo** at the
-  left of the transport bar, **Transport** at the right. Nothing is hidden:
-  which tracks are muted or soloed, and whether REAPER is rolling or armed, is
-  exactly what you want to read at a glance even when you must not touch it, so
-  the locked state only removes the ability to press them.
+- **Padlocks for the things that can bite you.** Three of them sit together in
+  the transport bar:
 
-  Both choices are remembered per browser, so a tablet that lives on the desk
+  | Lock | Default | Governs |
+  | --- | --- | --- |
+  | **Mute/Solo** | locked | every strip's MUTE and SOLO |
+  | **Faders** | *unlocked* | every fader |
+  | **Transport** | locked | play, stop, pause, record, repeat, go-to-start |
+
+  Faders default open because riding levels is the usual reason the tablet is
+  on the desk in the first place, and a fader cannot silence a channel outright
+  the way a stray tap on MUTE or STOP can.
+
+  Nothing is hidden when locked, only dimmed and made inert: which tracks are
+  muted or soloed, and whether REAPER is rolling or armed, is exactly what you
+  want to read at a glance even when you must not touch it.
+
+- **Per-track fader locks.** Each strip header carries its own small padlock,
+  for pinning the couple of channels that must not move — a playback stem, a
+  safety mic — while the rest stay live. The global fader lock overrides them,
+  so closing it locks everything regardless.
+
+  Every choice is remembered per browser, so a tablet that lives on the desk
   keeps whatever you picked. Anything unexpected — a reload, a browser that
-  refuses storage — leaves you locked rather than live.
+  refuses storage — falls back to the defaults above rather than to something
+  more permissive.
+
+  One caveat: per-track locks are stored by **track index**, because that is
+  all the web API's `TRACK` reply gives us to key on. Inserting or deleting a
+  track shifts the locks along with the numbering.
 
 - **Faders drag relatively.** Putting a finger down never jumps the level to
   where you touched, which is the failure mode that makes most tablet mixers

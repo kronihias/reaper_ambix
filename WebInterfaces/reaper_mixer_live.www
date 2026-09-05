@@ -1,5 +1,5 @@
 @description REAPER Live - touch mixer and transport web interface
-@version 0.3.0
+@version 0.4.0
 @author Matthias Kronlachner
 @provides
   reaper_mixer_live.html
@@ -12,13 +12,13 @@
 
   - One strip per track plus the master: name, track colour, level meter and
     volume fader
-  - **Everything that can bite you starts locked.** MUTE, SOLO and the
-    transport are dimmed and inert until you open the matching padlock -
-    **Mute/Solo** on the left of the transport bar, **Transport** on the
-    right. They stay visible while locked, so which tracks are muted or
-    soloed and whether REAPER is rolling can still be read at a glance. Each
-    choice is remembered, and anything unexpected (a reload, a browser that
-    refuses storage) leaves you locked rather than live
+  - **Padlocks for the things that can bite you.** MUTE/SOLO and the transport
+    start **locked**; the faders start **unlocked**, since riding levels is
+    the usual reason the tablet is there. Locked controls go dim and inert but
+    stay visible, so mute, solo and play state can still be read at a glance
+  - **Per-track fader locks.** Each strip header has its own padlock, for
+    pinning the channels that must not move - a playback stem, a safety mic -
+    while the rest stay live. The global fader lock overrides them
   - Faders drag **relatively**, so putting a finger down never jumps the level
     to where you touched. Double-tap resets a fader to 0 dB
   - Transport bar with go-to-start, stop, pause, play, record and repeat, plus
@@ -39,8 +39,8 @@
 
   Both devices need to be on the same network, and REAPER has to be running.
 @changelog
-  - Lock MUTE/SOLO and the transport by default, each behind its own padlock
-    button - "Mute/Solo" and "Transport" - in the transport bar. Both groups
-    stay visible while locked and only go dim and inert, so mute, solo, play
-    and record state can still be read at a glance. Both choices are
-    remembered per browser
+  - Add a global fader lock (unlocked by default) and a per-track fader lock
+    in each strip header; the global lock wins over the per-track ones
+  - Group the three padlocks together in the transport bar, and wrap the bar
+    on phone-width screens so the transport buttons can no longer be pushed
+    off the edge

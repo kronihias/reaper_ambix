@@ -113,6 +113,35 @@
   }
   .strip.master .strip-name { color: #ffb2c6; }
 
+  /* Per-track fader lock, in the header and clear of the fader itself so it
+     stays reachable while the fader below it is inert. */
+  .strip-lock {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    padding: 2px;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0.5;
+    display: inline-flex;
+    align-items: center;
+  }
+  .strip-lock svg { width: 14px; height: 14px; fill: currentColor; }
+  .strip-lock .lock-open { display: none; }
+  .strip.fader-locked .strip-lock { opacity: 1; color: var(--accent); }
+  .strip:not(.fader-locked) .strip-lock .lock-closed { display: none; }
+  .strip:not(.fader-locked) .strip-lock .lock-open { display: inline; }
+
+  /* A fader is movable only when the global lock is open AND the track is not
+     locked on its own; the global lock wins. Dimmed rather than hidden so the
+     level and meter stay readable. */
+  .fader-wrap { transition: opacity 120ms; }
+  body:not(.faders-unlocked) .fader-wrap,
+  .strip.fader-locked .fader-wrap {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+
   .strip-db {
     color: var(--text);
     font-size: 12px;
@@ -352,13 +381,23 @@
     border-radius: 4px;
   }
 
-  /* Small screens */
+  /* Small screens. The transport bar is one row of five items plus three
+     labelled locks, which does not fit a phone — so it wraps, with the spacer
+     forcing the break: time and locks on the first line, transport controls on
+     the second. Without this the transport buttons get pushed off-screen
+     entirely, which is the one thing that must never happen here. */
   @media (max-width: 600px) {
     .strip { min-width: 84px; padding: 6px; }
     .strip-name { font-size: 11px; }
     .fader-track { width: 56px; }
-    #transport .time { font-size: 18px; min-width: 100px; }
-    .tbtn { width: 48px; height: 40px; }
+    .btn { font-size: 10px; padding: 9px 0; letter-spacing: 0; }
+    #transport { flex-wrap: wrap; justify-content: center; row-gap: 8px; }
+    #transport .spacer { flex-basis: 100%; height: 0; }
+    #transport .time { font-size: 18px; min-width: 0; }
+    /* The three labelled locks plus the clock do not fit 375px otherwise, and
+       the time signature is the least useful thing on that row. */
+    #status-pill { display: none; }
+    .tbtn { width: 44px; height: 40px; }
     .tbtn.lock { width: auto; padding: 0 8px; font-size: 11px; }
   }
 </style>
@@ -375,6 +414,22 @@
     <div id="status-pill"><span id="tsNum">4</span>/<span id="tsDen">4</span></div>
     <button class="tbtn lock" id="btnMuteSolo" title="Lock/unlock mute and solo"
             aria-label="Lock or unlock the mute and solo buttons"><span>Mute/Solo</span>
+      <svg viewBox="0 0 24 24">
+        <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
+        <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
+        <rect x="5" y="10" width="14" height="11" rx="2"/>
+      </svg>
+    </button>
+    <button class="tbtn lock" id="btnFaderLock" title="Lock/unlock all faders"
+            aria-label="Lock or unlock every fader"><span>Faders</span>
+      <svg viewBox="0 0 24 24">
+        <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
+        <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
+        <rect x="5" y="10" width="14" height="11" rx="2"/>
+      </svg>
+    </button>
+    <button class="tbtn lock" id="btnTransportLock" title="Lock/unlock the transport"
+            aria-label="Lock or unlock the transport buttons"><span>Transport</span>
       <svg viewBox="0 0 24 24">
         <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
         <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
@@ -403,15 +458,6 @@
       <svg viewBox="0 0 24 24"><path d="M7 7h8v2l3-3-3-3v2H5v6h2zM17 17H9v-2l-3 3 3 3v-2h10v-6h-2z"/></svg>
     </button>
     </div>
-
-    <button class="tbtn lock" id="btnTransportLock" title="Lock/unlock the transport"
-            aria-label="Lock or unlock the transport buttons"><span>Transport</span>
-      <svg viewBox="0 0 24 24">
-        <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
-        <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
-        <rect x="5" y="10" width="14" height="11" rx="2"/>
-      </svg>
-    </button>
   </div>
 </div>
 
@@ -427,6 +473,7 @@ var trackState = {};       // id -> {name, flags, vol, peak, ...}
 var stripEls = {};         // id -> {el, name, db, faderWrap, fill, thumb, meter, mute, solo}
 var activeTouches = {};    // fader id -> true while dragging
 var localVol = {};         // id -> { value, until } (optimistic echo)
+var lockedFaders = {};     // id -> true for tracks locked individually
 var lastTransportState = -1;
 var lastRepeat = -1;
 var lastTimeStr = "";
@@ -489,8 +536,21 @@ function createStrip(id) {
   var name = document.createElement("span");
   name.className = "strip-name";
   name.textContent = id === 0 ? "MASTER" : ("Track " + id);
+  var lock = document.createElement("button");
+  lock.className = "strip-lock";
+  lock.title = "Lock/unlock this fader";
+  lock.setAttribute("aria-label", "Lock or unlock this track's fader");
+  lock.innerHTML =
+    '<svg viewBox="0 0 24 24">' +
+      '<path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>' +
+      '<path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>' +
+      '<rect x="5" y="10" width="14" height="11" rx="2"/>' +
+    '</svg>';
+  lock.addEventListener("click", function() { toggleFaderLock(id); });
+
   header.appendChild(num);
   header.appendChild(name);
+  header.appendChild(lock);
 
   var db = document.createElement("div");
   db.className = "strip-db";
@@ -537,6 +597,7 @@ function createStrip(id) {
     mute: mute, solo: solo
   };
 
+  applyFaderLock(id);
   attachFaderEvents(id);
   /* A negative value toggles, so the button needs no local state. */
   mute.addEventListener("click", function() {
@@ -794,7 +855,7 @@ function handleBeatPos(tok) {
    whatever the operator picked. localStorage throws in some private-browsing
    modes, hence the try/catch around every access; failing it just leaves the
    group locked. */
-function makeLock(buttonId, bodyClass, storageKey) {
+function makeLock(buttonId, bodyClass, storageKey, defaultUnlocked) {
   var btn = document.getElementById(buttonId);
 
   function set(unlocked) {
@@ -804,8 +865,11 @@ function makeLock(buttonId, bodyClass, storageKey) {
     try { localStorage.setItem(storageKey, unlocked ? "1" : "0"); } catch (e) {}
   }
 
-  var initial = false;
-  try { initial = localStorage.getItem(storageKey) === "1"; } catch (e) {}
+  var initial = !!defaultUnlocked;
+  try {
+    var stored = localStorage.getItem(storageKey);
+    if (stored !== null) initial = stored === "1";
+  } catch (e) {}
   set(initial);
 
   btn.addEventListener("click", function() {
@@ -813,8 +877,54 @@ function makeLock(buttonId, bodyClass, storageKey) {
   });
 }
 
-makeLock("btnMuteSolo", "mixer-unlocked", "reaperLive.mixerUnlocked");
-makeLock("btnTransportLock", "transport-unlocked", "reaperLive.transportUnlocked");
+makeLock("btnMuteSolo", "mixer-unlocked", "reaperLive.mixerUnlocked", false);
+makeLock("btnTransportLock", "transport-unlocked", "reaperLive.transportUnlocked", false);
+/* Faders default to UNLOCKED: riding levels is the normal reason to have this
+   open on the desk, and a fader cannot silence a channel outright the way a
+   stray tap on MUTE or STOP can. */
+makeLock("btnFaderLock", "faders-unlocked", "reaperLive.fadersUnlocked", true);
+
+/* ===== Per-track fader locks =====
+   For pinning the couple of channels that must not move - a playback stem, a
+   safety mic - while the rest stay live. The global lock still wins.
+
+   Stored by track index, which is all the web API's TRACK reply gives us to
+   key on, so inserting or deleting a track shifts the locks along with the
+   numbers. */
+var LOCKED_FADERS_KEY = "reaperLive.lockedFaders";
+
+function loadFaderLocks() {
+  try {
+    var raw = localStorage.getItem(LOCKED_FADERS_KEY);
+    if (!raw) return;
+    var ids = JSON.parse(raw);
+    if (!ids || !ids.length) return;
+    for (var i = 0; i < ids.length; i++) lockedFaders[ids[i]] = true;
+  } catch (e) {}
+}
+
+function saveFaderLocks() {
+  try {
+    localStorage.setItem(LOCKED_FADERS_KEY,
+                         JSON.stringify(Object.keys(lockedFaders).map(Number)));
+  } catch (e) {}
+}
+
+function applyFaderLock(id) {
+  var s = stripEls[id];
+  if (s) s.el.classList.toggle("fader-locked", !!lockedFaders[id]);
+}
+
+function toggleFaderLock(id) {
+  if (lockedFaders[id]) delete lockedFaders[id];
+  else lockedFaders[id] = true;
+  applyFaderLock(id);
+  saveFaderLocks();
+}
+
+loadFaderLocks();
+Object.keys(stripEls).forEach(function(id) { applyFaderLock(id); });
+
 
 /* ===== Transport buttons ===== */
 // REAPER command IDs: 1007 = Play, 40667 = Stop, 1008 = Pause, 1013 = Record, 1068 = Repeat toggle, 40042 = Go to start
