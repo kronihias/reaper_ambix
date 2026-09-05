@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="reaper_ambix" commit="01836f025d5f6b58a01148f50148a535fef304f5">
+<index version="1" name="reaper_ambix" commit="622379fe33adb64636d54354e3d35f8ee6919161">
   <category name="Extensions">
     <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions">
       <metadata>
@@ -80,7 +80,8 @@
 
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel0 \b \fs34 REAPER Live\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 A touch-friendly mixer and transport for REAPER's built-in web server, meant for a phone or tablet propped next to you rather than for a desktop browser.\par}
-{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} One strip per track plus the master: name, track colour, level meter, volume fader, MUTE and SOLO\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} One strip per track plus the master: name, track colour, level meter and volume fader\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} {\b Everything that can bite you starts locked.} MUTE and SOLO are hidden and the transport is inert until you open the matching padlock in the transport bar - mixer lock on the left, transport lock on the right. Each choice is remembered, and anything unexpected (a reload, a browser that refuses storage) leaves you locked rather than live\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Faders drag {\b relatively}, so putting a finger down never jumps the level to where you touched. Double-tap resets a fader to 0 dB\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Transport bar with go-to-start, stop, pause, play, record and repeat, plus the play position and time signature\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Shows a banner and dims the mixer when REAPER stops answering, so a dead connection is obvious instead of looking like a frozen desk\sa180\par}
@@ -98,6 +99,11 @@
       <version name="0.1.0" author="Matthias Kronlachner" time="2026-09-05T05:53:05Z">
         <changelog><![CDATA[- Initial release]]></changelog>
         <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/01836f025d5f6b58a01148f50148a535fef304f5/WebInterfaces/reaper_mixer_live.html</source>
+      </version>
+      <version name="0.2.0" author="Matthias Kronlachner" time="2026-09-05T05:57:15Z">
+        <changelog><![CDATA[- Hide MUTE and SOLO by default, with an M/S button in the transport bar to
+  reveal them; the choice is remembered per browser]]></changelog>
+        <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/0306c5c2e6c1f42ce60e0780ed2b7262b1d9c9ea/WebInterfaces/reaper_mixer_live.html</source>
       </version>
     </reapack>
   </category>
