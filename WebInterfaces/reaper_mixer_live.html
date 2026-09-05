@@ -204,11 +204,15 @@
   }
 
   /* ===== Buttons below fader ===== */
+  /* Mute and solo are hidden by default. On a live desk a stray tap costs far
+     more than the convenience is worth, and hiding them gives the faders the
+     extra room. The M/S button in the transport bar reveals them. */
   .strip-buttons {
-    display: flex;
+    display: none;
     gap: 4px;
     margin-top: 8px;
   }
+  body.show-ms .strip-buttons { display: flex; }
   .btn {
     flex: 1;
     background: var(--panel-2);
@@ -232,6 +236,29 @@
   .btn.solo.active {
     background: var(--yellow);
     color: #1b1d21;
+  }
+
+  /* Padlocks: closed while the group they guard is locked, open once it is
+     released. Each sits next to what it governs — mixer lock on the left,
+     transport lock on the right. A text label like "M/S" would read as
+     mid/side to anyone doing audio. */
+  .tbtn.lock { color: var(--muted); }
+  .tbtn.lock .lock-open { display: none; }
+  .tbtn.lock.unlocked { background: var(--accent-dim); color: #fff; }
+  .tbtn.lock.unlocked .lock-closed { display: none; }
+  .tbtn.lock.unlocked .lock-open { display: inline; }
+
+  /* Transport is dimmed and inert rather than hidden: seeing whether REAPER is
+     rolling or armed matters even when you must not touch it. */
+  #transport-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: opacity 120ms;
+  }
+  body:not(.transport-unlocked) #transport-controls {
+    opacity: 0.35;
+    pointer-events: none;
   }
 
   /* ===== Connection state ===== */
@@ -332,8 +359,17 @@
   <div id="transport">
     <div class="time" id="timeDisplay">1.1.00</div>
     <div id="status-pill"><span id="tsNum">4</span>/<span id="tsDen">4</span></div>
+    <button class="tbtn lock" id="btnMuteSolo" title="Lock/unlock mute and solo"
+            aria-label="Show or hide the mute and solo buttons">
+      <svg viewBox="0 0 24 24">
+        <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
+        <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
+        <rect x="5" y="10" width="14" height="11" rx="2"/>
+      </svg>
+    </button>
     <div class="spacer"></div>
 
+    <div id="transport-controls">
     <button class="tbtn" id="btnRewind" title="Go to start">
       <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg>
     </button>
@@ -351,6 +387,16 @@
     </button>
     <button class="tbtn repeat" id="btnRepeat" title="Repeat">
       <svg viewBox="0 0 24 24"><path d="M7 7h8v2l3-3-3-3v2H5v6h2zM17 17H9v-2l-3 3 3 3v-2h10v-6h-2z"/></svg>
+    </button>
+    </div>
+
+    <button class="tbtn lock" id="btnTransportLock" title="Lock/unlock the transport"
+            aria-label="Lock or unlock the transport buttons">
+      <svg viewBox="0 0 24 24">
+        <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
+        <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
+        <rect x="5" y="10" width="14" height="11" rx="2"/>
+      </svg>
     </button>
   </div>
 </div>
@@ -723,6 +769,38 @@ function handleBeatPos(tok) {
   if (nEl.textContent !== String(num)) nEl.textContent = num;
   if (dEl.textContent !== String(den)) dEl.textContent = den;
 }
+
+/* ===== Locks =====
+   Both groups start locked. On a live desk the cost of a stray tap on MUTE or
+   on STOP is far higher than the cost of one extra tap to unlock, and the
+   safe state is the one you get after a reload, a browser restart, or a
+   browser that refuses storage.
+
+   Each choice is remembered per browser so a tablet parked on the desk keeps
+   whatever the operator picked. localStorage throws in some private-browsing
+   modes, hence the try/catch around every access; failing it just leaves the
+   group locked. */
+function makeLock(buttonId, bodyClass, storageKey) {
+  var btn = document.getElementById(buttonId);
+
+  function set(unlocked) {
+    document.body.classList.toggle(bodyClass, unlocked);
+    btn.classList.toggle("unlocked", unlocked);
+    btn.setAttribute("aria-pressed", unlocked ? "true" : "false");
+    try { localStorage.setItem(storageKey, unlocked ? "1" : "0"); } catch (e) {}
+  }
+
+  var initial = false;
+  try { initial = localStorage.getItem(storageKey) === "1"; } catch (e) {}
+  set(initial);
+
+  btn.addEventListener("click", function() {
+    set(!document.body.classList.contains(bodyClass));
+  });
+}
+
+makeLock("btnMuteSolo", "show-ms", "reaperLive.showMuteSolo");
+makeLock("btnTransportLock", "transport-unlocked", "reaperLive.transportUnlocked");
 
 /* ===== Transport buttons ===== */
 // REAPER command IDs: 1007 = Play, 40667 = Stop, 1008 = Pause, 1013 = Record, 1068 = Repeat toggle, 40042 = Go to start

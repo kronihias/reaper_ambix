@@ -166,11 +166,22 @@ REAPER Live (web interface)
 A touch mixer and transport served by REAPER's built-in web server, meant for a
 phone or tablet next to the desk rather than a desktop browser.
 
-One strip per track plus the master — name, track colour, level meter, fader,
-MUTE and SOLO — over a transport bar with go-to-start, stop, pause, play,
-record and repeat, the play position and the time signature.
+One strip per track plus the master — name, track colour, level meter and
+fader — over a transport bar with go-to-start, stop, pause, play, record and
+repeat, the play position and the time signature.
 
-Two details that matter in use:
+Three details that matter in use:
+
+- **Everything that can bite you starts locked.** MUTE and SOLO are hidden
+  (which also gives the faders the full strip height) and the transport is
+  dimmed and inert, until you open the matching padlock in the transport bar —
+  mixer lock on the left, transport lock on the right. The transport stays
+  *visible* while locked, because whether REAPER is rolling or armed is exactly
+  what you want to read at a glance even when you must not touch it.
+
+  Both choices are remembered per browser, so a tablet that lives on the desk
+  keeps whatever you picked. Anything unexpected — a reload, a browser that
+  refuses storage — leaves you locked rather than live.
 
 - **Faders drag relatively.** Putting a finger down never jumps the level to
   where you touched, which is the failure mode that makes most tablet mixers
