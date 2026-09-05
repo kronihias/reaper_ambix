@@ -1,0 +1,35 @@
+@description REAPER Live - touch mixer and transport web interface
+@version 0.1.0
+@author Matthias Kronlachner
+@provides
+  reaper_mixer_live.html
+@link https://github.com/kronihias/reaper_ambix
+@about
+  # REAPER Live
+
+  A touch-friendly mixer and transport for REAPER's built-in web server, meant
+  for a phone or tablet propped next to you rather than for a desktop browser.
+
+  - One strip per track plus the master: name, track colour, level meter,
+    volume fader, MUTE and SOLO
+  - Faders drag **relatively**, so putting a finger down never jumps the level
+    to where you touched. Double-tap resets a fader to 0 dB
+  - Transport bar with go-to-start, stop, pause, play, record and repeat, plus
+    the play position and time signature
+  - Shows a banner and dims the mixer when REAPER stops answering, so a dead
+    connection is obvious instead of looking like a frozen desk
+
+  ## Setting it up
+
+  ReaPack installs the page into `reaper_www_root/`, but REAPER still has to be
+  told to serve it:
+
+  1. Options -> Preferences -> Control/OSC/web
+  2. Add (or edit) a **Web browser interface**
+  3. Set a port, and choose `reaper_mixer_live.html` as the default web browser
+     interface page
+  4. Open `http://<computer-ip>:<port>/` on the phone or tablet
+
+  Both devices need to be on the same network, and REAPER has to be running.
+@changelog
+  - Initial release

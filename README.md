@@ -1,6 +1,22 @@
 reaper_ambix
 ============
 
+Tools for REAPER, all installable from one [ReaPack](https://reapack.com/)
+repository. The ambisonics extension the repo is named after, plus whatever
+else turns out to be worth keeping around.
+
+| Package | What it is |
+| --- | --- |
+| **reaper_ambix** | Native extension: `.ambix` file read/write plus five actions ([below](#actions)) |
+| **REAPER Live** | Touch mixer and transport for REAPER's web server ([below](#reaper-live-web-interface)) |
+
+See [ReaPack](#reapack) for the one-time repository import; after that both
+show up in *Browse packages* and can be installed independently.
+
+
+reaper_ambix (extension)
+------------------------
+
 REAPER plug-in that adds read/write support for `.ambix` files following the
 ambiX (Ambisonics eXchangeable) specification [1].
 
@@ -144,6 +160,46 @@ and libambix's own test suite does not catch it. See
 [src/fuma.cpp](src/fuma.cpp) and [tests/test_fuma.cpp](tests/test_fuma.cpp).
 
 
+REAPER Live (web interface)
+---------------------------
+
+A touch mixer and transport served by REAPER's built-in web server, meant for a
+phone or tablet next to the desk rather than a desktop browser.
+
+One strip per track plus the master — name, track colour, level meter, fader,
+MUTE and SOLO — over a transport bar with go-to-start, stop, pause, play,
+record and repeat, the play position and the time signature.
+
+Two details that matter in use:
+
+- **Faders drag relatively.** Putting a finger down never jumps the level to
+  where you touched, which is the failure mode that makes most tablet mixers
+  unusable live. Movement only counts past a small threshold, and the fader
+  re-anchors there so it does not lurch. Double-tap resets to 0 dB.
+- **A dead connection is visible.** REAPER's polling framework has no error
+  callback, so a stalled server otherwise just looks like a frozen desk. If no
+  reply arrives for two seconds the page shows a banner and dims the mixer,
+  and clears it as soon as replies resume.
+
+### Setting it up
+
+ReaPack drops the page into `reaper_www_root/`, but REAPER still has to be told
+to serve it:
+
+1. *Options → Preferences → Control/OSC/web*
+2. Add (or edit) a **Web browser interface**
+3. Set a port, and choose `reaper_mixer_live.html` as the default web browser
+   interface page
+4. Open `http://<computer-ip>:<port>/` on the phone or tablet
+
+Both devices need to be on the same network. The page pulls `main.js` from
+REAPER itself, so there is nothing else to install.
+
+The interface talks to REAPER over the plain-HTTP web API, which has no
+authentication — anyone who can reach that port can drive the session. Keep it
+on a network you trust.
+
+
 Screenshots
 -----------
 
@@ -175,21 +231,27 @@ and a Linux tarball (x86_64 and aarch64) are built automatically and published i
 ReaPack
 -------
 
-The extension is also distributed through [ReaPack](https://reapack.com/), which
-installs the bare plugin file directly (no installer). In REAPER choose
-*Extensions → ReaPack → Import repositories…* and paste:
+Everything here installs through [ReaPack](https://reapack.com/). In REAPER
+choose *Extensions → ReaPack → Import repositories…* and paste:
 
 ```
 https://github.com/kronihias/reaper_ambix/raw/master/index.xml
 ```
 
-Then open *Extensions → ReaPack → Browse packages*, find **reaper_ambix** under
-the *Extensions* category, install, and restart REAPER. ReaPack downloads the
-matching per-platform binary straight from the GitHub release assets.
+Then open *Extensions → ReaPack → Browse packages*:
 
-The package index ([index.xml](index.xml)) is generated from
-[Extensions/reaper_ambix.ext](Extensions/reaper_ambix.ext) by
-`scripts/reapack_index.sh` (cfillion's `reapack-index` tool).
+- **reaper_ambix** under *Extensions* — the plug-in binary, downloaded straight
+  from the matching GitHub release asset for your platform. Restart REAPER
+  after installing or updating.
+- **REAPER Live** under *WebInterfaces* — installed into `reaper_www_root/`.
+  Needs the one-time setup described [above](#setting-it-up).
+
+The package index ([index.xml](index.xml)) is generated from the metadata files
+([Extensions/reaper_ambix.ext](Extensions/reaper_ambix.ext),
+[WebInterfaces/reaper_mixer_live.www](WebInterfaces/reaper_mixer_live.www)) by
+`scripts/reapack_index.sh` (cfillion's `reapack-index` tool). A package's
+version lives in its own metadata file, so they release independently — only
+the extension is tied to `VERSION` and the GitHub release tags.
 
 
 Cutting a release

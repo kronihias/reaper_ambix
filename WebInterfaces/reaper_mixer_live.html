@@ -1,0 +1,738 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=0"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>REAPER Live</title>
+<script src="main.js"></script>
+<style>
+  :root {
+    --bg: #1b1d21;
+    --panel: #262a30;
+    --panel-2: #2e333a;
+    --line: #15171a;
+    --text: #e6e8eb;
+    --muted: #8a8f98;
+    --accent: #4fb3ff;
+    --accent-dim: #2b7fbf;
+    --red: #ff4757;
+    --red-glow: rgba(255,71,87,0.35);
+    --green: #37d67a;
+    --yellow: #ffcc33;
+    --meter-lo: #37d67a;
+    --meter-mid: #ffcc33;
+    --meter-hi: #ff4757;
+    --fader-track: #0f1114;
+    --fader-fill: #3a4048;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    cursor: default;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* ===== Mixer area ===== */
+  #mixer {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 6px;
+    padding: 10px 10px 6px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  #mixer::-webkit-scrollbar { height: 6px; }
+  #mixer::-webkit-scrollbar-thumb { background: #3a3f47; border-radius: 3px; }
+
+  .strip {
+    background: var(--panel);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    min-width: 96px;
+    flex: 1 1 0;
+    padding: 8px;
+    scroll-snap-align: start;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+  }
+  .strip.master {
+    background: #2a2028;
+    box-shadow: inset 0 0 0 1px rgba(255,71,120,0.18);
+  }
+
+  .strip-color {
+    height: 4px;
+    border-radius: 2px;
+    background: transparent;
+    margin-bottom: 6px;
+  }
+  .strip-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    margin-bottom: 6px;
+  }
+  .strip-num {
+    background: var(--panel-2);
+    color: var(--muted);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    flex: 0 0 auto;
+  }
+  .strip-name {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .strip.master .strip-name { color: #ffb2c6; }
+
+  .strip-db {
+    color: var(--text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    padding: 4px 0;
+    background: var(--fader-track);
+    border-radius: 4px;
+    margin-bottom: 6px;
+  }
+
+  /* ===== Fader ===== */
+  .fader-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    padding: 10px 0;
+    touch-action: none;
+  }
+  .fader-track {
+    position: relative;
+    width: 72px;
+    height: 100%;
+    background: var(--fader-track);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4);
+  }
+  /* zero-dB tick line */
+  .fader-track::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    top: 29.3%; /* position for 0 dB given vol = pos^4 * 4, pos_0dB = (1/4)^0.25 ≈ 0.707 → 29.3% from top */
+    height: 1px;
+    background: rgba(255,255,255,0.15);
+    pointer-events: none;
+  }
+  .fader-fill {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 0;
+    background: linear-gradient(to top, #2b3038, #3a4048);
+    height: 50%;
+    pointer-events: none;
+  }
+  .fader-meter {
+    position: absolute;
+    left: 6px;
+    width: 6px;
+    bottom: 4px;
+    top: 4px;
+    background: rgba(0,0,0,0.5);
+    border-radius: 2px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .fader-meter-fill {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 0%;
+    background: linear-gradient(to top,
+      var(--meter-lo) 0%,
+      var(--meter-lo) 60%,
+      var(--meter-mid) 80%,
+      var(--meter-hi) 100%);
+    transition: height 40ms linear;
+  }
+  .fader-thumb {
+    position: absolute;
+    left: -8px; right: -8px;
+    height: 34px;
+    background: linear-gradient(to bottom, #5a6068 0%, #3a3f47 48%, #2a2f35 52%, #444a52 100%);
+    border-radius: 4px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.12);
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+  .fader-thumb::after {
+    content: '';
+    position: absolute;
+    left: 6px; right: 6px;
+    top: 50%;
+    height: 1px;
+    background: rgba(255,255,255,0.25);
+  }
+
+  /* ===== Buttons below fader ===== */
+  .strip-buttons {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .btn {
+    flex: 1;
+    background: var(--panel-2);
+    color: var(--muted);
+    border: none;
+    border-radius: 6px;
+    padding: 10px 0;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: inherit;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 80ms, color 80ms;
+  }
+  .btn:active { background: #1a1d22; }
+  .btn.mute.active {
+    background: var(--red);
+    color: #fff;
+    box-shadow: 0 0 12px var(--red-glow);
+  }
+  .btn.solo.active {
+    background: var(--yellow);
+    color: #1b1d21;
+  }
+
+  /* ===== Connection state ===== */
+  /* REAPER's polling framework has no error callback, so "connected" is
+     inferred from replies still arriving. */
+  #offline {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    background: var(--red);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-align: center;
+    padding: 6px 10px;
+    padding-top: calc(6px + env(safe-area-inset-top));
+    z-index: 10;
+    display: none;
+  }
+  body.disconnected #offline { display: block; }
+  body.disconnected #mixer { opacity: 0.45; }
+
+  /* ===== Transport bar ===== */
+  #transport {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  #transport .time {
+    font-variant-numeric: tabular-nums;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+    min-width: 120px;
+    padding: 6px 12px;
+    background: var(--fader-track);
+    border-radius: 6px;
+    text-align: center;
+  }
+  #transport .time.playing { color: var(--green); }
+  #transport .time.recording { color: var(--red); }
+  #transport .time.paused { color: var(--yellow); }
+
+  #transport .spacer { flex: 1; }
+
+  .tbtn {
+    background: var(--panel-2);
+    color: var(--text);
+    border: none;
+    border-radius: 8px;
+    width: 56px;
+    height: 44px;
+    font-family: inherit;
+    font-size: 16px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 80ms, color 80ms;
+  }
+  .tbtn:active { background: #1a1d22; }
+  .tbtn svg { width: 20px; height: 20px; fill: currentColor; }
+  .tbtn.play.active { background: var(--green); color: #0a0a0a; }
+  .tbtn.pause.active { background: var(--yellow); color: #1b1d21; }
+  .tbtn.record { color: var(--red); }
+  .tbtn.record.active { background: var(--red); color: #fff; box-shadow: 0 0 12px var(--red-glow); }
+  .tbtn.repeat.active { background: var(--accent); color: #0a0a0a; }
+
+  #status-pill {
+    font-size: 11px;
+    color: var(--muted);
+    padding: 4px 8px;
+    background: var(--fader-track);
+    border-radius: 4px;
+  }
+
+  /* Small screens */
+  @media (max-width: 600px) {
+    .strip { min-width: 84px; padding: 6px; }
+    .strip-name { font-size: 11px; }
+    .fader-track { width: 56px; }
+    #transport .time { font-size: 18px; min-width: 100px; }
+    .tbtn { width: 48px; height: 40px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="offline">NO CONNECTION TO REAPER</div>
+
+<div id="app">
+  <div id="mixer"></div>
+
+  <div id="transport">
+    <div class="time" id="timeDisplay">1.1.00</div>
+    <div id="status-pill"><span id="tsNum">4</span>/<span id="tsDen">4</span></div>
+    <div class="spacer"></div>
+
+    <button class="tbtn" id="btnRewind" title="Go to start">
+      <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg>
+    </button>
+    <button class="tbtn" id="btnStop" title="Stop">
+      <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+    </button>
+    <button class="tbtn pause" id="btnPause" title="Pause">
+      <svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+    </button>
+    <button class="tbtn play" id="btnPlay" title="Play">
+      <svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg>
+    </button>
+    <button class="tbtn record" id="btnRecord" title="Record">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg>
+    </button>
+    <button class="tbtn repeat" id="btnRepeat" title="Repeat">
+      <svg viewBox="0 0 24 24"><path d="M7 7h8v2l3-3-3-3v2H5v6h2zM17 17H9v-2l-3 3 3 3v-2h10v-6h-2z"/></svg>
+    </button>
+  </div>
+</div>
+
+<script>
+/* ===== REAPER API polling ===== */
+wwr_req_recur("TRANSPORT;BEATPOS", 100);
+wwr_req_recur("NTRACK;TRACK", 150);
+wwr_start();
+
+/* ===== State ===== */
+var nTrack = -1;
+var trackState = {};       // id -> {name, flags, vol, peak, ...}
+var stripEls = {};         // id -> {el, name, db, faderWrap, fill, thumb, meter, mute, solo}
+var activeTouches = {};    // fader id -> true while dragging
+var localVol = {};         // id -> { value, until } (optimistic echo)
+var lastTransportState = -1;
+var lastRepeat = -1;
+var lastTimeStr = "";
+
+/* ===== dB / volume helpers ===== */
+// REAPER volume convention: vol=1.0 is 0dB, vol=4 is ~+12dB, vol=0 is -inf.
+// Fader position x in [0,1]: vol = x^4 * 4 (matches fancier.html curve).
+// Reverse: x = (vol/4)^(1/4)
+function volToPos(v) {
+  if (v <= 0) return 0;
+  var p = Math.pow(v / 4, 0.25);
+  if (p < 0) p = 0;
+  if (p > 1) p = 1;
+  return p;
+}
+function posToVol(p) {
+  if (p < 0) p = 0;
+  if (p > 1) p = 1;
+  return Math.pow(p, 4) * 4;
+}
+function volToDb(v) {
+  if (v < 0.00000002980232) return "-inf";
+  return (Math.log(v) * 8.68588963806).toFixed(1);
+}
+
+/* ===== UI construction ===== */
+function ensureStrips(count) {
+  var mixer = document.getElementById("mixer");
+  // Destroy strips that no longer exist
+  Object.keys(stripEls).forEach(function(id) {
+    var i = parseInt(id, 10);
+    if (i > count) {
+      mixer.removeChild(stripEls[id].el);
+      delete stripEls[id];
+    }
+  });
+  // Create strips we need (0 = master, 1..count = tracks)
+  for (var i = 0; i <= count; i++) {
+    if (!stripEls[i]) createStrip(i);
+  }
+  // Ensure order: master first, then tracks 1..count
+  var desired = [];
+  for (var i = 0; i <= count; i++) desired.push(stripEls[i].el);
+  desired.forEach(function(el) { mixer.appendChild(el); });
+}
+
+function createStrip(id) {
+  var strip = document.createElement("div");
+  strip.className = "strip" + (id === 0 ? " master" : "");
+  strip.dataset.id = id;
+
+  var color = document.createElement("div");
+  color.className = "strip-color";
+
+  var header = document.createElement("div");
+  header.className = "strip-header";
+  var num = document.createElement("span");
+  num.className = "strip-num";
+  num.textContent = id === 0 ? "M" : String(id);
+  var name = document.createElement("span");
+  name.className = "strip-name";
+  name.textContent = id === 0 ? "MASTER" : ("Track " + id);
+  header.appendChild(num);
+  header.appendChild(name);
+
+  var db = document.createElement("div");
+  db.className = "strip-db";
+  db.textContent = "0.0 dB";
+
+  var faderWrap = document.createElement("div");
+  faderWrap.className = "fader-wrap";
+  var track = document.createElement("div");
+  track.className = "fader-track";
+  var fill = document.createElement("div");
+  fill.className = "fader-fill";
+  var meter = document.createElement("div");
+  meter.className = "fader-meter";
+  var meterFill = document.createElement("div");
+  meterFill.className = "fader-meter-fill";
+  meter.appendChild(meterFill);
+  var thumb = document.createElement("div");
+  thumb.className = "fader-thumb";
+  track.appendChild(fill);
+  track.appendChild(meter);
+  track.appendChild(thumb);
+  faderWrap.appendChild(track);
+
+  var btns = document.createElement("div");
+  btns.className = "strip-buttons";
+  var mute = document.createElement("button");
+  mute.className = "btn mute";
+  mute.textContent = "MUTE";
+  btns.appendChild(mute);
+  var solo = document.createElement("button");
+  solo.className = "btn solo";
+  solo.textContent = "SOLO";
+  btns.appendChild(solo);
+
+  strip.appendChild(color);
+  strip.appendChild(header);
+  strip.appendChild(db);
+  strip.appendChild(faderWrap);
+  strip.appendChild(btns);
+
+  stripEls[id] = {
+    el: strip, name: name, db: db, color: color,
+    faderWrap: faderWrap, fill: fill, thumb: thumb, meterFill: meterFill,
+    mute: mute, solo: solo
+  };
+
+  attachFaderEvents(id);
+  /* A negative value toggles, so the button needs no local state. */
+  mute.addEventListener("click", function() {
+    wwr_req("SET/TRACK/" + id + "/MUTE/-1");
+  });
+  solo.addEventListener("click", function() {
+    wwr_req("SET/TRACK/" + id + "/SOLO/-1");
+  });
+}
+
+/* ===== Fader interaction ===== */
+// Relative drag: touching the fader does not jump it to the touch position.
+// Volume changes only as the finger/mouse moves, after a small threshold.
+var DRAG_THRESHOLD_PX = 6;
+
+// At most one fader is dragged at a time, so the whole gesture lives here
+// rather than in a closure per strip: {id, startY, startPos, moved}.
+var drag = null;
+
+function pointerY(ev) {
+  if (ev.touches && ev.touches.length) return ev.touches[0].clientY;
+  if (ev.changedTouches && ev.changedTouches.length) return ev.changedTouches[0].clientY;
+  return ev.clientY;
+}
+
+function sendVol(id, pos) {
+  if (pos < 0) pos = 0;
+  if (pos > 1) pos = 1;
+  var vol = posToVol(pos);
+  localVol[id] = { value: vol, until: Date.now() + 400 };
+  updateFaderVisual(id, pos, vol);
+  wwr_req("SET/TRACK/" + id + "/VOL/" + vol);
+}
+
+function dragStart(id, ev) {
+  var s = stripEls[id];
+  if (!s) return;
+  ev.preventDefault();
+  activeTouches[id] = true;
+  drag = { id: id, startY: pointerY(ev), startPos: (s.pos != null) ? s.pos : 0,
+           moved: false };
+}
+
+function dragMove(ev) {
+  if (!drag) return;
+  var s = stripEls[drag.id];
+  if (!s) { drag = null; return; }
+  ev.preventDefault();
+
+  var y = pointerY(ev);
+  if (!drag.moved) {
+    if (Math.abs(y - drag.startY) < DRAG_THRESHOLD_PX) return;
+    drag.moved = true;
+    // Re-anchor so the fader doesn't jump by the threshold distance.
+    drag.startY = y;
+    if (s.pos != null) drag.startPos = s.pos;
+  }
+  var rect = s.faderWrap.getBoundingClientRect();
+  var h = rect.height - 2 * 10;   // matches .fader-wrap padding
+  if (h <= 0) return;
+  // Up motion (negative dy) raises the fader.
+  sendVol(drag.id, drag.startPos - (y - drag.startY) / h);
+}
+
+function dragEnd(ev) {
+  if (!drag) return;
+  if (ev) ev.preventDefault();
+  activeTouches[drag.id] = false;
+  drag = null;
+}
+
+// Mouse move/up go on the document so a drag that wanders off the fader keeps
+// tracking. They are registered ONCE here, not per strip: strips are destroyed
+// whenever the track count changes, and document listeners added in their
+// constructor would never be removed, so every rebuild leaked another pair.
+document.addEventListener("mousemove", dragMove);
+document.addEventListener("mouseup", dragEnd);
+
+function attachFaderEvents(id) {
+  var wrap = stripEls[id].faderWrap;
+
+  wrap.addEventListener("mousedown", function(ev) { dragStart(id, ev); });
+  // Touch events are delivered to the element the gesture started on, so
+  // these belong on the strip and die with it.
+  wrap.addEventListener("touchstart", function(ev) { dragStart(id, ev); },
+                        { passive: false });
+  wrap.addEventListener("touchmove", dragMove, { passive: false });
+  wrap.addEventListener("touchend", dragEnd, { passive: false });
+  wrap.addEventListener("touchcancel", dragEnd, { passive: false });
+
+  // Double-click to reset to 0 dB
+  wrap.addEventListener("dblclick", function(ev) {
+    ev.preventDefault();
+    sendVol(id, volToPos(1.0));
+  });
+}
+
+function updateFaderVisual(id, pos, vol) {
+  var s = stripEls[id];
+  if (!s) return;
+  s.pos = pos;
+  var pct = pos * 100;
+  s.fill.style.height = pct + "%";
+  s.thumb.style.top = (100 - pct) + "%";
+  s.db.textContent = volToDb(vol) + " dB";
+}
+
+function updateMeter(id, peakDb) {
+  var s = stripEls[id];
+  if (!s) return;
+  // Map [-60, +6] dB -> [0, 100]% height
+  var minDb = -60, maxDb = 6;
+  var pct = (peakDb - minDb) / (maxDb - minDb) * 100;
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  s.meterFill.style.height = pct + "%";
+}
+
+/* ===== Connection watchdog =====
+   wwr_req_recur() keeps firing whether or not REAPER answers, and the
+   framework offers no failure hook, so treat "no reply for a while" as
+   disconnected. The threshold is several times the slowest poll interval
+   (150 ms) so a busy render does not flap the banner. */
+var lastReplyAt = Date.now();
+var disconnected = false;
+var OFFLINE_AFTER_MS = 2000;
+
+setInterval(function() {
+  var stale = (Date.now() - lastReplyAt) > OFFLINE_AFTER_MS;
+  if (stale !== disconnected) {
+    disconnected = stale;
+    document.body.classList.toggle("disconnected", stale);
+  }
+}, 500);
+
+/* ===== REAPER reply parser ===== */
+function wwr_onreply(results) {
+  lastReplyAt = Date.now();
+  var lines = results.split("\n");
+  for (var i = 0; i < lines.length; i++) {
+    var tok = lines[i].split("\t");
+    if (!tok.length) continue;
+    switch (tok[0]) {
+      case "TRANSPORT": handleTransport(tok); break;
+      case "BEATPOS":   handleBeatPos(tok); break;
+      case "NTRACK":    handleNTrack(tok); break;
+      case "TRACK":     handleTrack(tok); break;
+    }
+  }
+}
+
+function handleNTrack(tok) {
+  if (tok.length < 2) return;
+  var n = parseInt(tok[1], 10);
+  if (isNaN(n)) return;
+  if (n !== nTrack) {
+    nTrack = n;
+    ensureStrips(n);
+  }
+}
+
+function handleTrack(tok) {
+  // TRACK \t tracknumber \t trackname \t flags \t vol \t pan \t peak \t meterpos \t width \t panmode \t sendcnt \t recvcnt \t hwoutcnt \t color
+  if (tok.length < 5) return;
+  var id = parseInt(tok[1], 10);
+  if (isNaN(id)) return;
+  if (!stripEls[id]) return;
+
+  var name = tok[2] || "";
+  var flags = parseInt(tok[3], 10) || 0;
+  var vol = parseFloat(tok[4]);
+  var peakDb = tok[6] !== undefined ? (parseInt(tok[6], 10) / 10) : -120;
+  var colorInt = tok[13] !== undefined ? parseInt(tok[13], 10) : 0;
+
+  var s = stripEls[id];
+
+  // Track color accent — REAPER sends a native int; bit 0x1000000 marks a custom color, lower 24 bits are RGB.
+  var newColor = "transparent";
+  if (colorInt && (colorInt & 0xffffff)) {
+    var r = colorInt & 0xff;
+    var g = (colorInt >> 8) & 0xff;
+    var b = (colorInt >> 16) & 0xff;
+    newColor = "rgb(" + r + "," + g + "," + b + ")";
+  }
+  if (s._color !== newColor) {
+    s.color.style.background = newColor;
+    s._color = newColor;
+  }
+
+  // Name + number
+  var displayName = (id === 0) ? "MASTER" : (name || ("Track " + id));
+  if (s.name.textContent !== displayName) s.name.textContent = displayName;
+
+  // Volume — skip if user is actively dragging or we're still echoing locally
+  var echo = localVol[id];
+  var now = Date.now();
+  if (echo && echo.until < now) { delete localVol[id]; echo = null; }
+  if (!activeTouches[id] && !echo) {
+    var pos = volToPos(vol);
+    updateFaderVisual(id, pos, vol);
+  }
+
+  // Mute / solo. 16 is soloed, 32 is solo-in-place; both light the button.
+  s.mute.classList.toggle("active", !!(flags & 8));
+  s.solo.classList.toggle("active", !!(flags & (16 | 32)));
+
+  // Meter
+  updateMeter(id, peakDb);
+}
+
+function handleTransport(tok) {
+  if (tok.length < 5) return;
+  var state = parseInt(tok[1], 10);
+  var repeat = parseInt(tok[3], 10);
+  var posStr = tok[4];
+
+  var timeEl = document.getElementById("timeDisplay");
+  if (posStr !== lastTimeStr) {
+    timeEl.textContent = posStr;
+    lastTimeStr = posStr;
+  }
+
+  if (state !== lastTransportState) {
+    lastTransportState = state;
+    document.getElementById("btnPlay").classList.toggle("active", !!(state & 1));
+    document.getElementById("btnPause").classList.toggle("active", !!(state & 2));
+    document.getElementById("btnRecord").classList.toggle("active", !!(state & 4));
+    timeEl.classList.toggle("playing", !!(state & 1) && !(state & 4));
+    timeEl.classList.toggle("paused", !!(state & 2));
+    timeEl.classList.toggle("recording", !!(state & 4));
+  }
+
+  if (repeat !== lastRepeat) {
+    lastRepeat = repeat;
+    document.getElementById("btnRepeat").classList.toggle("active", repeat > 0);
+  }
+}
+
+function handleBeatPos(tok) {
+  if (tok.length < 8) return;
+  var num = tok[6], den = tok[7];
+  var nEl = document.getElementById("tsNum");
+  var dEl = document.getElementById("tsDen");
+  if (nEl.textContent !== String(num)) nEl.textContent = num;
+  if (dEl.textContent !== String(den)) dEl.textContent = den;
+}
+
+/* ===== Transport buttons ===== */
+// REAPER command IDs: 1007 = Play, 40667 = Stop, 1008 = Pause, 1013 = Record, 1068 = Repeat toggle, 40042 = Go to start
+document.getElementById("btnPlay").addEventListener("click",   function() { wwr_req("1007"); });
+document.getElementById("btnStop").addEventListener("click",   function() { wwr_req("40667"); });
+document.getElementById("btnPause").addEventListener("click",  function() { wwr_req("1008"); });
+document.getElementById("btnRecord").addEventListener("click", function() { wwr_req("1013"); });
+document.getElementById("btnRepeat").addEventListener("click", function() { wwr_req("1068"); });
+document.getElementById("btnRewind").addEventListener("click", function() { wwr_req("40042"); });
+</script>
+
+</body>
+</html>
