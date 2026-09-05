@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="reaper_ambix" commit="aa925e577d87db1aa6395a1f6aa816c936dd8447">
+<index version="1" name="reaper_ambix" commit="3c3aec37dd7ec34e7617a3c145892b37609103d9">
   <category name="Extensions">
-    <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness-normalize and track-channel-count actions">
+    <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions">
       <metadata>
         <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
 {\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
@@ -9,11 +9,17 @@
 
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel0 \b \fs34 reaper_ambix\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 REAPER extension adding read and write support for {\f1 \fs24 .ambix} files following the ambiX (Ambisonics eXchangeable) specification. Output can be written uncompressed (CAF container) or with WavPack lossless compression; reading auto-detects the container.\par}
-{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 It also adds two actions to the main action list:\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 It also adds five actions to the main action list:\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Normalize selected item(s) to target loudness (LUFS)...}\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Measures the integrated loudness of each selected item to ITU-R BS.1770 and sets the take volume so it lands on the target you enter. Ambisonic items are measured on the W channel alone; surround beds use the BS.1770-5 Annex 3 channel weighting up to 9.1.4.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Measure loudness of selected item(s) (LUFS)}\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 The same measurement, reported to the console and changing nothing, with the quietest/loudest/spread across a batch. Unlike REAPER's own item loudness analysis it knows about ambisonics.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Set channel count of selected track(s) and their sends...}\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Sets the track channel count on every selected track and resizes the sends that carried those tracks' full width, so a whole encoder-into-bus chain changes ambisonic order in one step. Partial routings (mono sends, offset taps, hardware outputs) are left alone.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Convert selected item(s) to .ambix file(s)...}\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Writes each selected item out as an .ambix file next to its source media, item by item rather than through the render dialog. Optional WavPack lossless compression.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Convert selected item(s) from FuMa to ambiX...}\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Converts Furse-Malham (classic B-format) material to ACN/SN3D, per section 4.2.1 of the ambiX paper, up to third order including the reduced FuMa sets. The result can be added to the item as an extra take.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Restart REAPER after installing or updating.\par}
 }
 ]]></description>
@@ -41,6 +47,23 @@
         <source platform="windows-arm64ec" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.3.0/reaper_ambix-winarm64.dll</source>
         <source platform="linux64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.3.0/reaper_ambix-x86_64.so</source>
         <source platform="linux-aarch64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.3.0/reaper_ambix-aarch64.so</source>
+      </version>
+      <version name="0.4.0" author="Matthias Kronlachner" time="2026-09-05T05:06:19Z">
+        <changelog><![CDATA[- New action: measure the loudness of the selected items and report it,
+  changing nothing - the ambisonic-aware counterpart to REAPER's own item
+  loudness analysis
+- New action: convert the selected items to .ambix files, item by item
+  instead of through the render dialog
+- New action: convert Furse-Malham (B-format) items to the ambiX convention
+  (ACN/SN3D), up to third order including the reduced FuMa sets. Implemented
+  from the ambiX paper rather than libambix's AMBIX_MATRIX_FUMA, which routes
+  first-order X into the ambiX Z slot and adds Condon-Shortley signs the
+  paper rejects]]></changelog>
+        <source platform="darwin" file="reaper_ambix.dylib">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix.dylib</source>
+        <source platform="win64" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-win64.dll</source>
+        <source platform="windows-arm64ec" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-winarm64.dll</source>
+        <source platform="linux64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-x86_64.so</source>
+        <source platform="linux-aarch64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-aarch64.so</source>
       </version>
     </reapack>
   </category>
