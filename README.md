@@ -277,6 +277,12 @@ Then open *Extensions → ReaPack → Browse packages*:
 - **REAPER Live** under *WebInterfaces* — installed into `reaper_www_root/`.
   Needs the one-time setup described [above](#setting-it-up).
 
+*Synchronize packages* only updates what you already have, so anything added
+here later still has to be picked up from *Browse packages* once. To have new
+packages install themselves instead, right-click this repository in *Manage
+repositories* and set **Install new packages → When synchronizing**. That is a
+local ReaPack preference, not something the repository can set for you.
+
 The package index ([index.xml](index.xml)) is generated from the metadata files
 ([Extensions/reaper_ambix.ext](Extensions/reaper_ambix.ext),
 [WebInterfaces/reaper_mixer_live.www](WebInterfaces/reaper_mixer_live.www)) by
