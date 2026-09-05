@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="reaper_ambix" commit="3c3aec37dd7ec34e7617a3c145892b37609103d9">
+<index version="1" name="reaper_ambix" commit="01836f025d5f6b58a01148f50148a535fef304f5">
   <category name="Extensions">
     <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions">
       <metadata>
@@ -64,6 +64,40 @@
         <source platform="windows-arm64ec" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-winarm64.dll</source>
         <source platform="linux64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-x86_64.so</source>
         <source platform="linux-aarch64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-aarch64.so</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="WebInterfaces">
+    <reapack name="reaper_mixer_live.www" type="webinterface" desc="REAPER Live - touch mixer and transport web interface">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+{\*\listtable{\list\listtemplateid1{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat1\levelindent0{\leveltext\'01\u8226 ?;}{\levelnumbers;}\fi-360\li360\lin360 }{\listname ;}\listid1}
+{\list\listtemplateid2{\listlevel\levelnfc0\levelnfcn0\leveljc0\leveljcn0\levelfollow0\levelstartat1\levelindent0{\leveltext\'01\u8226 ?;}{\levelnumbers;}\fi-360\li360\lin360 }{\listname ;}\listid2}
+}
+{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}{\listoverride\listid2\listoverridecount0\ls2}}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel0 \b \fs34 REAPER Live\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 A touch-friendly mixer and transport for REAPER's built-in web server, meant for a phone or tablet propped next to you rather than for a desktop browser.\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} One strip per track plus the master: name, track colour, level meter, volume fader, MUTE and SOLO\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Faders drag {\b relatively}, so putting a finger down never jumps the level to where you touched. Double-tap resets a fader to 0 dB\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Transport bar with go-to-start, stop, pause, play, record and repeat, plus the play position and time signature\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Shows a banner and dims the mixer when REAPER stops answering, so a dead connection is obvious instead of looking like a frozen desk\sa180\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel1 \b \fs32 Setting it up\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 ReaPack installs the page into {\f1 \fs24 reaper_www_root/}, but REAPER still has to be told to serve it:\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls2\ilvl0\tx360 {\listtext\tab 1.\tab} Options -> Preferences -> Control/OSC/web\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls2\ilvl0\tx360 {\listtext\tab 2.\tab} Add (or edit) a {\b Web browser interface}\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls2\ilvl0\tx360 {\listtext\tab 3.\tab} Set a port, and choose {\f1 \fs24 reaper_mixer_live.html} as the default web browser interface page\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls2\ilvl0\tx360 {\listtext\tab 4.\tab} Open {\f1 \fs24 http://<computer-ip>:<port>/} on the phone or tablet\sa180\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Both devices need to be on the same network, and REAPER has to be running.\par}
+}
+]]></description>
+        <link rel="website">https://github.com/kronihias/reaper_ambix</link>
+      </metadata>
+      <version name="0.1.0" author="Matthias Kronlachner" time="2026-09-05T05:53:05Z">
+        <changelog><![CDATA[- Initial release]]></changelog>
+        <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/01836f025d5f6b58a01148f50148a535fef304f5/WebInterfaces/reaper_mixer_live.html</source>
       </version>
     </reapack>
   </category>
