@@ -204,15 +204,19 @@
   }
 
   /* ===== Buttons below fader ===== */
-  /* Mute and solo are hidden by default. On a live desk a stray tap costs far
-     more than the convenience is worth, and hiding them gives the faders the
-     extra room. The M/S button in the transport bar reveals them. */
+  /* Mute and solo stay visible even when locked — their lit state is worth
+     reading at a glance — but they are dimmed and inert until the Mute/Solo
+     padlock is opened, so a stray tap on a live desk cannot do anything. */
   .strip-buttons {
-    display: none;
+    display: flex;
     gap: 4px;
     margin-top: 8px;
+    transition: opacity 120ms;
   }
-  body.show-ms .strip-buttons { display: flex; }
+  body:not(.mixer-unlocked) .strip-buttons {
+    opacity: 0.45;
+    pointer-events: none;
+  }
   .btn {
     flex: 1;
     background: var(--panel-2);
@@ -242,7 +246,16 @@
      released. Each sits next to what it governs — mixer lock on the left,
      transport lock on the right. A text label like "M/S" would read as
      mid/side to anyone doing audio. */
-  .tbtn.lock { color: var(--muted); }
+  .tbtn.lock {
+    color: var(--muted);
+    width: auto;
+    padding: 0 10px;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
   .tbtn.lock .lock-open { display: none; }
   .tbtn.lock.unlocked { background: var(--accent-dim); color: #fff; }
   .tbtn.lock.unlocked .lock-closed { display: none; }
@@ -257,7 +270,7 @@
     transition: opacity 120ms;
   }
   body:not(.transport-unlocked) #transport-controls {
-    opacity: 0.35;
+    opacity: 0.45;
     pointer-events: none;
   }
 
@@ -346,6 +359,7 @@
     .fader-track { width: 56px; }
     #transport .time { font-size: 18px; min-width: 100px; }
     .tbtn { width: 48px; height: 40px; }
+    .tbtn.lock { width: auto; padding: 0 8px; font-size: 11px; }
   }
 </style>
 </head>
@@ -360,7 +374,7 @@
     <div class="time" id="timeDisplay">1.1.00</div>
     <div id="status-pill"><span id="tsNum">4</span>/<span id="tsDen">4</span></div>
     <button class="tbtn lock" id="btnMuteSolo" title="Lock/unlock mute and solo"
-            aria-label="Show or hide the mute and solo buttons">
+            aria-label="Lock or unlock the mute and solo buttons"><span>Mute/Solo</span>
       <svg viewBox="0 0 24 24">
         <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
         <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
@@ -391,7 +405,7 @@
     </div>
 
     <button class="tbtn lock" id="btnTransportLock" title="Lock/unlock the transport"
-            aria-label="Lock or unlock the transport buttons">
+            aria-label="Lock or unlock the transport buttons"><span>Transport</span>
       <svg viewBox="0 0 24 24">
         <path class="lock-closed" d="M12 2a5 5 0 0 0-5 5v3h2V7a3 3 0 0 1 6 0v3h2V7a5 5 0 0 0-5-5z"/>
         <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
@@ -799,7 +813,7 @@ function makeLock(buttonId, bodyClass, storageKey) {
   });
 }
 
-makeLock("btnMuteSolo", "show-ms", "reaperLive.showMuteSolo");
+makeLock("btnMuteSolo", "mixer-unlocked", "reaperLive.mixerUnlocked");
 makeLock("btnTransportLock", "transport-unlocked", "reaperLive.transportUnlocked");
 
 /* ===== Transport buttons ===== */

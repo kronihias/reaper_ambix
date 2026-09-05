@@ -172,12 +172,12 @@ repeat, the play position and the time signature.
 
 Three details that matter in use:
 
-- **Everything that can bite you starts locked.** MUTE and SOLO are hidden
-  (which also gives the faders the full strip height) and the transport is
-  dimmed and inert, until you open the matching padlock in the transport bar —
-  mixer lock on the left, transport lock on the right. The transport stays
-  *visible* while locked, because whether REAPER is rolling or armed is exactly
-  what you want to read at a glance even when you must not touch it.
+- **Everything that can bite you starts locked.** MUTE, SOLO and the transport
+  go dim and inert until you open the matching padlock — **Mute/Solo** at the
+  left of the transport bar, **Transport** at the right. Nothing is hidden:
+  which tracks are muted or soloed, and whether REAPER is rolling or armed, is
+  exactly what you want to read at a glance even when you must not touch it, so
+  the locked state only removes the ability to press them.
 
   Both choices are remembered per browser, so a tablet that lives on the desk
   keeps whatever you picked. Anything unexpected — a reload, a browser that

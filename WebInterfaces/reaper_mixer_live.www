@@ -1,5 +1,5 @@
 @description REAPER Live - touch mixer and transport web interface
-@version 0.2.0
+@version 0.3.0
 @author Matthias Kronlachner
 @provides
   reaper_mixer_live.html
@@ -12,9 +12,11 @@
 
   - One strip per track plus the master: name, track colour, level meter and
     volume fader
-  - **Everything that can bite you starts locked.** MUTE and SOLO are hidden
-    and the transport is inert until you open the matching padlock in the
-    transport bar - mixer lock on the left, transport lock on the right. Each
+  - **Everything that can bite you starts locked.** MUTE, SOLO and the
+    transport are dimmed and inert until you open the matching padlock -
+    **Mute/Solo** on the left of the transport bar, **Transport** on the
+    right. They stay visible while locked, so which tracks are muted or
+    soloed and whether REAPER is rolling can still be read at a glance. Each
     choice is remembered, and anything unexpected (a reload, a browser that
     refuses storage) leaves you locked rather than live
   - Faders drag **relatively**, so putting a finger down never jumps the level
@@ -38,6 +40,7 @@
   Both devices need to be on the same network, and REAPER has to be running.
 @changelog
   - Lock MUTE/SOLO and the transport by default, each behind its own padlock
-    button in the transport bar. The transport stays visible but inert while
-    locked, so play and record state can still be read at a glance. Both
-    choices are remembered per browser
+    button - "Mute/Solo" and "Transport" - in the transport bar. Both groups
+    stay visible while locked and only go dim and inert, so mute, solo, play
+    and record state can still be read at a glance. Both choices are
+    remembered per browser
