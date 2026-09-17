@@ -6,10 +6,12 @@
  *
  *  Both walk the same pipeline: read each selected item through a take audio
  *  accessor, optionally run the block through a channel-conversion matrix, and
- *  write an .ambix file with libambix. The render dialog can already produce
- *  .ambix, but only for what the master bus is playing — these two work item
- *  by item, which is what you want when a session holds a dozen deliverables
- *  or a folder of FuMa material that needs bringing into the ambiX convention.
+ *  write an .ambix file with libambix. The render dialog can also write .ambix
+ *  per item ("Selected media items"), and it is the tool to use when FX must be
+ *  baked in, since it runs the take FX chain. These two are for material that
+ *  is already ambiX: a pre-FX copy per item, next to its source, with no render
+ *  settings to touch — a dozen deliverables, or a folder of FuMa material that
+ *  needs bringing into the ambiX convention.
  *
  *  What gets written is the ITEM, not the whole source file: the accessor
  *  delivers the item's own extent with its take gain applied, pre track FX.

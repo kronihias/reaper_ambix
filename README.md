@@ -126,9 +126,12 @@ interpreter.
 ### ambiX: Convert selected item(s) to .ambix file(s)...
 
 Writes each selected item out as an `.ambix` file, next to the item's source
-media file and named after the take. The render dialog can already produce
-`.ambix`, but only for what the master bus is playing; this works item by item,
-which is what you want when a session holds a folder's worth of deliverables.
+media file and named after the take. The render dialog can also produce
+`.ambix` per item (source *Selected media items*), and that is the right tool
+when FX have to be baked in, since it runs the take FX chain and writes the
+file directly. This action is for material that is already ambiX: it copies the
+item pre-FX, needs no render settings, and puts each file next to its own
+source rather than in one render directory.
 
 What gets written is the **item**, not the whole source file: its own trimmed
 extent, with take gain applied, pre track FX. So two items cut out of one long
