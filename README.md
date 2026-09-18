@@ -20,8 +20,11 @@ reaper_ambix (extension)
 REAPER plug-in that adds read/write support for `.ambix` files following the
 ambiX (Ambisonics eXchangeable) specification [1].
 
-Output can be written uncompressed (CAF container) or with WavPack lossless
-compression. Reading auto-detects the container from the file's magic bytes.
+Output can be written uncompressed (CAF container) or WavPack-compressed,
+either lossless or lossy (WavPack's hybrid mode, see
+[Lossy WavPack](#lossy-wavpack)). Reading auto-detects the container from the
+file's magic bytes, and the source properties of a loaded `.ambix` item say
+which of the three it is.
 
 It also adds five actions to REAPER's main action list — see
 [Actions](#actions) below.
@@ -140,7 +143,9 @@ would expect. Existing files are never clobbered silently — a `-1`, `-2` suffi
 is added unless you ask for overwrite.
 
 A take needs a complete ambisonic set, `(N+1)^2` channels, since that is what
-the ambiX basic format stores. WavPack lossless compression is on by default.
+the ambiX basic format stores. WavPack lossless compression is on by default;
+a positive number in the *lossy bits/sample* field switches to WavPack's
+hybrid mode at that rate (see [Lossy WavPack](#lossy-wavpack)).
 
 ### ambiX: Convert selected item(s) from FuMa to ambiX...
 
@@ -234,11 +239,37 @@ authentication — anyone who can reach that port can drive the session. Keep it
 on a network you trust.
 
 
+Lossy WavPack
+-------------
+
+The compression choice in the render format options is one list: CAF
+uncompressed, WavPack lossless, or WavPack lossy at 6, 4 or 3 bits per sample
+and channel. The convert actions take the same choice as a number, with 0
+meaning lossless.
+
+Lossy here is WavPack's hybrid mode without a correction file. It is not a
+psychoacoustic codec: it quantises the prediction residual so each channel is
+stored at roughly the requested number of bits, which puts the noise floor
+about 6 dB per bit below that channel's own level, with WavPack's dynamic
+noise shaping on top. That property is what makes it usable for ambisonics.
+The higher-order channels of a bed are quiet, and a noise floor that follows
+each channel's level survives the decoder matrix, or a rotation, the way a
+masking-based codec's does not. At 4 bits/sample the noise is a signal-following
+hiss about 24 dB down per channel; 6 bits/sample is roughly 36 dB.
+
+For a 36-channel float32 bed at 48 kHz, the raw rate is 6.9 MB/s, lossless
+typically lands at 3 to 4 MB/s depending on the material, and hybrid at 4
+bits/sample is 0.86 MB/s. There is no way back to lossless from a hybrid file,
+so keep the lossless master. The source properties of a loaded item report
+`WavPack lossy (4.1 bit/sample)` or `WavPack lossless`, so a delivery can be
+checked without leaving REAPER.
+
+
 Screenshots
 -----------
 
 Render settings (REAPER's render dialog) — pick ambisonic order, format,
-sample format and toggle WavPack lossless compression:
+sample format and the container/compression:
 
 ![ambiX render settings — BASIC format](docs/screenshot_1.png)
 

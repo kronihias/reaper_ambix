@@ -98,6 +98,7 @@ static void            (*UpdateArrange)(void);
 
 #define EXTSTATE_SECTION "reaper_ambix"
 #define KEY_WAVPACK      "convert_wavpack"
+#define KEY_WAVPACK_BITS "convert_wavpack_bits"
 #define KEY_OVERWRITE    "convert_overwrite"
 #define KEY_ADDTAKE      "convert_fuma_addtake"
 
@@ -225,6 +226,8 @@ struct ConvertJob
 
   bool                      fuma;        /* run blocks through the FuMa matrix */
   bool                      wavpack;
+  float                     wavpackBits; /* > 0: WavPack hybrid (lossy) bits per
+                                            sample and channel; 0 = lossless */
   bool                      overwrite;
 
   /* state for the entry in progress */
@@ -240,7 +243,7 @@ struct ConvertJob
   bool                      cancelled;
   bool                      finished;
 
-  ConvertJob() : cur(0), fuma(false), wavpack(true), overwrite(false),
+  ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false),
                  accessor(NULL), fh(NULL), pos(0.0),
                  totalSeconds(0.0), doneSeconds(0.0),
                  cancelled(false), finished(false) {}
@@ -326,6 +329,16 @@ static bool JobOpenEntry(ConvertJob &job)
   if (!job.fh)
   {
     e.skipReason = "libambix could not create the output file";
+    JobCloseEntry(job, false);
+    return false;
+  }
+
+  /* Lossy mode is configured before the first write; the value was already
+   * clamped into WavPack's range when the options were read. */
+  if (job.wavpack && job.wavpackBits > 0.f &&
+      ambix_set_wavpack_bitrate(job.fh, job.wavpackBits) != AMBIX_ERR_SUCCESS)
+  {
+    e.skipReason = "libambix refused the WavPack bit rate";
     JobCloseEntry(job, false);
     return false;
   }
@@ -508,6 +521,26 @@ static bool ParseYesNo(const char *s, bool fallback)
   return fallback;
 }
 
+/* WavPack's hybrid bit rate in bits per sample. Anything at or below zero
+ * means lossless; a positive value is clamped into the range the encoder
+ * accepts (the wavpack CLI's 2.0 .. 23.9). */
+static float ParseBitsPerSample(const char *s)
+{
+  const double v = atof(s);
+  if (v <= 0.0) return 0.f;
+  if (v < 2.0)  return 2.f;
+  if (v > 23.9) return 23.9f;
+  return (float)v;
+}
+
+/* "uncompressed CAF", "WavPack lossless" or "WavPack lossy 4.0 bit/sample". */
+static void DescribeCompression(const ConvertJob &job, char *buf, size_t n)
+{
+  if (!job.wavpack)             snprintf(buf, n, "uncompressed CAF");
+  else if (job.wavpackBits > 0) snprintf(buf, n, "WavPack lossy %.1f bit/sample", job.wavpackBits);
+  else                          snprintf(buf, n, "WavPack lossless");
+}
+
 /* GetUserInputs() hands back the fields comma-separated. Splits in place. */
 static void SplitCsv(char *csv, const char **fields, int count)
 {
@@ -647,39 +680,48 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
 static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
 {
   const char *storedWp = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK);
+  const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
   const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
   const char *storedAt = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
 
+  const int numFields = fuma ? 4 : 3;
   char vals[256];
   if (fuma)
-    snprintf(vals, sizeof(vals), "%s,%s,%s",
+    snprintf(vals, sizeof(vals), "%s,%s,%s,%s",
              (storedWp && *storedWp) ? storedWp : "y",
+             (storedBt && *storedBt) ? storedBt : "0",
              (storedOw && *storedOw) ? storedOw : "n",
              (storedAt && *storedAt) ? storedAt : "y");
   else
-    snprintf(vals, sizeof(vals), "%s,%s",
+    snprintf(vals, sizeof(vals), "%s,%s,%s",
              (storedWp && *storedWp) ? storedWp : "y",
+             (storedBt && *storedBt) ? storedBt : "0",
              (storedOw && *storedOw) ? storedOw : "n");
 
   const char *captions = fuma
-    ? "WavPack lossless compression (y/n):,Overwrite existing files (y/n):,"
-      "Add result as a new take (y/n):,extrawidth=60"
-    : "WavPack lossless compression (y/n):,Overwrite existing files (y/n):,"
-      "extrawidth=60";
+    ? "WavPack compression (y/n):,WavPack lossy bits/sample (0 = lossless, 2-23.9):,"
+      "Overwrite existing files (y/n):,Add result as a new take (y/n):,extrawidth=60"
+    : "WavPack compression (y/n):,WavPack lossy bits/sample (0 = lossless, 2-23.9):,"
+      "Overwrite existing files (y/n):,extrawidth=60";
 
-  if (!GetUserInputs(fuma ? FUMA_TITLE : CONVERT_TITLE, fuma ? 3 : 2,
+  if (!GetUserInputs(fuma ? FUMA_TITLE : CONVERT_TITLE, numFields,
                      captions, vals, sizeof(vals)))
     return false;
 
-  const char *fields[3];
-  SplitCsv(vals, fields, fuma ? 3 : 2);
+  const char *fields[4];
+  SplitCsv(vals, fields, numFields);
 
-  job.wavpack   = ParseYesNo(fields[0], true);
-  job.overwrite = ParseYesNo(fields[1], false);
-  if (addTakeOut) *addTakeOut = fuma ? ParseYesNo(fields[2], true) : false;
+  job.wavpack     = ParseYesNo(fields[0], true);
+  job.wavpackBits = ParseBitsPerSample(fields[1]);
+  job.overwrite   = ParseYesNo(fields[2], false);
+  if (addTakeOut) *addTakeOut = fuma ? ParseYesNo(fields[3], true) : false;
 
-  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,   job.wavpack   ? "y" : "n", true);
-  SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE, job.overwrite ? "y" : "n", true);
+  char bits[32];
+  snprintf(bits, sizeof(bits), "%g", (double)job.wavpackBits);
+
+  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,      job.wavpack   ? "y" : "n", true);
+  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS, bits, true);
+  SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
   if (fuma && addTakeOut)
     SetExtState(EXTSTATE_SECTION, KEY_ADDTAKE, *addTakeOut ? "y" : "n", true);
 
@@ -743,10 +785,10 @@ static void ConvertSelectedItemsToAmbix()
     return;
   }
 
-  char heading[256];
+  char compression[64], heading[256];
+  DescribeCompression(job, compression, sizeof(compression));
   snprintf(heading, sizeof(heading), "ambiX: converting %d item%s to .ambix (%s)",
-           numSelected, numSelected == 1 ? "" : "s",
-           job.wavpack ? "WavPack lossless" : "uncompressed CAF");
+           numSelected, numSelected == 1 ? "" : "s", compression);
   ReportJob(job, heading);
   /* Files were written; the project itself is untouched, so no undo point. */
 }
@@ -783,11 +825,11 @@ static void ConvertSelectedItemsFromFuMa()
     return;
   }
 
-  char heading[256];
+  char compression[64], heading[256];
+  DescribeCompression(job, compression, sizeof(compression));
   snprintf(heading, sizeof(heading),
            "ambiX: converting %d item%s from FuMa to ambiX (%s)",
-           numSelected, numSelected == 1 ? "" : "s",
-           job.wavpack ? "WavPack lossless" : "uncompressed CAF");
+           numSelected, numSelected == 1 ? "" : "s", compression);
   const int written = ReportJob(job, heading);
 
   if (!written || !addTake) return;

@@ -261,12 +261,28 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
     else
       snprintf(matrix, 20, "no");
 
-    const char *container_str = "unknown";
+    /* For WavPack, say whether the stream is lossless or hybrid (lossy), and
+     * at what stored rate, so a delivered file can be checked in REAPER's
+     * source properties without any other tool. */
+    char container_str[64];
     switch (ambix_get_container(m_fh)) {
-      case AMBIX_CONTAINER_CAF:     container_str = "CAF";     break;
-      case AMBIX_CONTAINER_WAVPACK: container_str = "WavPack"; break;
+      case AMBIX_CONTAINER_CAF:
+        snprintf(container_str, sizeof(container_str), "CAF (uncompressed)");
+        break;
+      case AMBIX_CONTAINER_WAVPACK:
+      {
+        const float bitrate = ambix_get_wavpack_bitrate(m_fh);
+        if (bitrate > 0.f)
+          snprintf(container_str, sizeof(container_str),
+                   "WavPack lossy (%.1f bit/sample)", bitrate);
+        else
+          snprintf(container_str, sizeof(container_str), "WavPack lossless");
+        break;
+      }
       case AMBIX_CONTAINER_NONE:
-      default:                      container_str = "unknown"; break;
+      default:
+        snprintf(container_str, sizeof(container_str), "unknown");
+        break;
     }
 
     snprintf(temp, 4096, "Length: %s:\r\n"

@@ -46,7 +46,7 @@
 #define IDC_EDIT3                       1019
 #define IDC_CHANNELLAYOUT               1023
 #define IDC_REVIEWMATRIX                1024
-#define IDC_WAVPACK_ENABLE              1025
+#define IDC_COMPRESSION                 1025
 #define IDC_MATRIX_HEADER               1026
 #define IDC_MATRIX_TEXTAREA             1027
 #define IDC_COPY_MATRIX                 1028

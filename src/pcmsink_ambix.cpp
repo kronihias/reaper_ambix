@@ -79,13 +79,25 @@ typedef struct {
   //      from the legacy layout by the total cfgdata length: a legacy
   //      payload is exactly 40 + rows*cols*sizeof(float32_t) bytes, a v2
   //      payload is sizeof(AMBIXSINK_CONFIG) + matrix bytes. ----
-  uint32_t version;          // 2 = WavPack-aware
-  uint32_t wavpack_enabled;  // 0 = uncompressed CAF, 1 = WavPack lossless
-  uint32_t reserved[2];      // future-proof, zero-init
+  uint32_t version;              // 2 = WavPack-aware, 3 = adds the lossy bit rate
+  uint32_t wavpack_enabled;      // 0 = uncompressed CAF, 1 = WavPack
+  uint32_t wavpack_bitrate_x100; // v3: WavPack hybrid (lossy) bits per sample
+                                 //     and channel, times 100; 0 = lossless.
+                                 //     Was a zeroed reserved word in v2, so a
+                                 //     v2 payload reads back as lossless.
+  uint32_t reserved;             // future-proof, zero-init
   // float32_t *data follows at offset sizeof(AMBIXSINK_CONFIG)
 } AMBIXSINK_CONFIG;
 static const int AMBIXSINK_LEGACY_HEADER_SIZE = 40; /* sizeof pre-v2 header */
 
+
+/* "CAF", "WavPack lossless" or "WavPack lossy 4.0 bit/sample", for messages. */
+static void describe_container(char *buf, size_t n, bool wavpack, float bitrate)
+{
+  if (!wavpack)            snprintf(buf, n, "CAF");
+  else if (bitrate > 0.f)  snprintf(buf, n, "WavPack lossy %.1f bit/sample", bitrate);
+  else                     snprintf(buf, n, "WavPack lossless");
+}
 
 void post_matrix(ambix_matrix_t *matrix)
 {
@@ -126,6 +138,7 @@ public:
     m_fn.Set(fn);
     m_writemarkers = 1;
     m_wavpack_enabled = true; // default: lossless compression on
+    m_wavpack_bitrate = 0.f;  // > 0 selects WavPack hybrid (lossy) mode
 
     m_adapter_matrix = NULL; // this one gets passed
 
@@ -161,6 +174,9 @@ public:
                                : AMBIXSINK_LEGACY_HEADER_SIZE;
       if (is_v2 && pAmbixConfigData->version >= 2) {
         m_wavpack_enabled = (pAmbixConfigData->wavpack_enabled != 0);
+      }
+      if (is_v2 && pAmbixConfigData->version >= 3) {
+        m_wavpack_bitrate = REAPER_MAKELEINT(pAmbixConfigData->wavpack_bitrate_x100) / 100.f;
       }
 
       if ((rows > 0) && (cols > 0))
@@ -299,6 +315,9 @@ public:
     
     m_isopen = false;
 
+    char container[64];
+    describe_container(container, sizeof(container), m_wavpack_enabled, m_wavpack_bitrate);
+
     ambix_filemode_t open_mode = AMBIX_WRITE;
     if (m_wavpack_enabled) open_mode = (ambix_filemode_t)(open_mode | AMBIX_USE_WAVPACK);
     m_fh=ambix_open(m_fn.Get(), open_mode, &m_ainfo);
@@ -320,7 +339,7 @@ public:
                  "contains characters libambix cannot handle, or a file with\n"
                  "this name is already open.",
                  m_fn.Get(),
-                 m_wavpack_enabled ? "WavPack" : "CAF",
+                 container,
                  (m_fileformat == AMBIX_BASIC) ? "BASIC" : "EXTENDED",
                  m_ambi_out_channels, m_order,
                  m_xtrachannels,
@@ -329,8 +348,34 @@ public:
       }
       return;
     }
-    else
-      m_isopen = true;
+
+    /* Lossy mode has to be requested before the first sample goes in; the
+     * encoder is configured lazily on that write. The presets in the dialog
+     * are all in range, so a refusal here means something is really wrong,
+     * and rendering lossless instead would not be what was asked for. */
+    if (m_wavpack_enabled && m_wavpack_bitrate > 0.f)
+    {
+      const ambix_err_t err = ambix_set_wavpack_bitrate(m_fh, m_wavpack_bitrate);
+      if (err != AMBIX_ERR_SUCCESS)
+      {
+        printf("Error: libambix refused WavPack bit rate %.2f (err %d)\n", m_wavpack_bitrate, (int)err);
+        if (ShowMessageBox)
+        {
+          char msg[512];
+          snprintf(msg, sizeof(msg),
+                   "ambix render aborted: libambix refused the WavPack lossy\n"
+                   "bit rate of %.2f bits per sample (error %d).\n\n"
+                   "Pick another compression setting in the format options.",
+                   m_wavpack_bitrate, (int)err);
+          ShowMessageBox(msg, "ambix render error", 0);
+        }
+        ambix_close(m_fh);
+        m_fh = 0;
+        remove(m_fn.Get());
+        return;
+      }
+    }
+    m_isopen = true;
     
     if (m_adapter_matrix) // is this save to always be called in case the matrix exists?
     {
@@ -616,6 +661,7 @@ private:
   // 6 "Include Regions starting with #"
   int m_writemarkers;
   bool m_wavpack_enabled;
+  float m_wavpack_bitrate; // WavPack hybrid bits per sample and channel, 0 = lossless
   
   uint32_t m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels;
   
@@ -682,6 +728,53 @@ static void SetSampleformatStr(HWND hwndDlg, const char* txt, int idx)
   int n = SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_GETCOUNT, 0, 0);
   SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_ADDSTRING, n, (LPARAM)txt);
   SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETITEMDATA, n, idx);
+}
+
+/* Compression presets for the IDC_COMPRESSION combobox. Item data:
+ *   -1  uncompressed CAF
+ *    0  WavPack lossless
+ *   >0  WavPack hybrid (lossy) at data/100 bits per sample and channel
+ * The lossy rates are WavPack's bits-per-sample form; the noise floor sits
+ * about 6 dB per bit below each channel's own level, which is what makes
+ * the mode usable for ambisonic beds where the higher orders are quiet. */
+struct CompressionPreset { const char *label; int data; };
+static const CompressionPreset kCompressionPresets[] = {
+  { "CAF uncompressed",             -1  },
+  { "WavPack lossless",              0  },
+  { "WavPack lossy, 6 bit/sample",   600 },
+  { "WavPack lossy, 4 bit/sample",   400 },
+  { "WavPack lossy, 3 bit/sample",   300 },
+};
+static const int kNumCompressionPresets =
+  (int)(sizeof(kCompressionPresets) / sizeof(kCompressionPresets[0]));
+
+static void fillCompressionPresets(HWND hwndDlg)
+{
+  for (int i = 0; i < kNumCompressionPresets; ++i)
+  {
+    int n = SendDlgItemMessage(hwndDlg, IDC_COMPRESSION, CB_GETCOUNT, 0, 0);
+    SendDlgItemMessage(hwndDlg, IDC_COMPRESSION, CB_ADDSTRING, n, (LPARAM)kCompressionPresets[i].label);
+    SendDlgItemMessage(hwndDlg, IDC_COMPRESSION, CB_SETITEMDATA, n, kCompressionPresets[i].data);
+  }
+}
+
+/* Select the preset matching `data`. A lossy rate that is not in the list
+ * (only possible if the presets change between versions) goes to the
+ * nearest lossy preset rather than silently back to lossless. */
+static void selectCompression(HWND hwndDlg, int data)
+{
+  int best = 1, bestDist = -1;
+  for (int i = 0; i < kNumCompressionPresets; ++i)
+  {
+    const int d = kCompressionPresets[i].data;
+    if (d == data) { best = i; break; }
+    if (data > 0 && d > 0)
+    {
+      const int dist = abs(d - data);
+      if (bestDist < 0 || dist < bestDist) { bestDist = dist; best = i; }
+    }
+  }
+  SendDlgItemMessage(hwndDlg, IDC_COMPRESSION, CB_SETCURSEL, best, 0);
 }
 
 /* add entry to adaptormatrix selection */
@@ -1000,9 +1093,11 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
     
     pAmbixConfigData->writemarkers = getCurrentItemData(hwndDlg, IDC_WRITEMARKER);
 
-    /* v2 fields: WavPack flag */
-    pAmbixConfigData->version = 2;
-    pAmbixConfigData->wavpack_enabled = IsDlgButtonChecked(hwndDlg, IDC_WAVPACK_ENABLE) ? 1 : 0;
+    /* v2/v3 fields: container and WavPack bit rate */
+    const int compression = getCurrentItemData(hwndDlg, IDC_COMPRESSION);
+    pAmbixConfigData->version = 3;
+    pAmbixConfigData->wavpack_enabled = (compression >= 0) ? 1 : 0;
+    pAmbixConfigData->wavpack_bitrate_x100 = (compression > 0) ? (uint32_t)compression : 0;
 
     /* AdaptorMatrix */
     
@@ -1084,6 +1179,9 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       SetSampleformatStr(hwndDlg, "Signed 32 bit PCM", 3);
       SetSampleformatStr(hwndDlg, "32 bit float", 4);
       SetSampleformatStr(hwndDlg, "64 bit float", 5);
+
+      // Container / compression
+      fillCompressionPresets(hwndDlg);
       
       // Adaptor Matrix
       SetAdaptormatrixStr(hwndDlg, "Full 3D (No Reduction)", 0);
@@ -1126,7 +1224,7 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, 0, 0);
         SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETCURSEL, 1, 0);
         /* WavPack lossless compression is on by default */
-        CheckDlgButton(hwndDlg, IDC_WAVPACK_ENABLE, BST_CHECKED);
+        selectCompression(hwndDlg, 0);
       }
       
       // parameters have been sent by reaper -> parse them and set gui accordingly
@@ -1142,15 +1240,22 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SendDlgItemMessage(hwndDlg, IDC_ADAPTORMATRIX, CB_SETCURSEL, pAmbixConfigData->reduction_sel, 0);
         SendDlgItemMessage(hwndDlg, IDC_WRITEMARKER, CB_SETCURSEL, pAmbixConfigData->writemarkers, 0);
 
-        /* v2: restore WavPack checkbox if the saved config has the new fields */
+        /* v2/v3: restore the compression choice if the saved config has the
+         * new fields; a legacy config predates WavPack and means CAF. */
         const int legacy_payload = AMBIXSINK_LEGACY_HEADER_SIZE
                                    + (int)(pAmbixConfigData->rows
                                            * pAmbixConfigData->cols
                                            * sizeof(float32_t));
         const bool is_v2 = (configLen != legacy_payload)
                             && (pAmbixConfigData->version >= 2);
-        CheckDlgButton(hwndDlg, IDC_WAVPACK_ENABLE,
-                       (is_v2 && pAmbixConfigData->wavpack_enabled) ? BST_CHECKED : BST_UNCHECKED);
+        int compression = -1;
+        if (is_v2 && pAmbixConfigData->wavpack_enabled)
+        {
+          compression = 0;
+          if (pAmbixConfigData->version >= 3)
+            compression = (int)pAmbixConfigData->wavpack_bitrate_x100;
+        }
+        selectCompression(hwndDlg, compression);
       }
       
       enableDisableElements(hwndDlg);

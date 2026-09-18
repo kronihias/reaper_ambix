@@ -28,14 +28,15 @@ COMBOBOX        IDC_EXTRACHANNELS,170,19,32,90,CBS_DROPDOWNLIST | WS_VSCROLL | W
 LTEXT           "Required Input Channels:",IDC_INCH_TEXT,210,21,68,8
 LTEXT           "num",IDC_REQINCH_TXT,278,21,10,8
 
-// --- Row 3 (y=35): Sample Format | WavPack toggle | Markers dropdown ---
-// Reaper clips the format panel at the original 51-DLU height, so the WavPack
-// toggle has to live on the same row as Sample Format. Markers combo is
-// shortened (still functional via dropdown).
-LTEXT           "Sample Format:",IDC_MATRIX_TEXT2,2,37,51,8
-COMBOBOX        IDC_SAMPLEFORMAT,55,35,72,98,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-CONTROL         "WavPack lossless",IDC_WAVPACK_ENABLE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,131,37,80,10
-COMBOBOX        IDC_WRITEMARKER,215,35,73,98,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+// --- Row 3 (y=35): Bit depth | Container/compression | Markers dropdown ---
+// Reaper clips the format panel at the original 51-DLU height, so the
+// compression choice has to live on the same row as the sample format. The
+// label is kept short to make room for "WavPack lossy, 6 bit/sample"; the
+// markers combo is shortened (still functional via dropdown).
+LTEXT           "Bit depth:",IDC_MATRIX_TEXT2,2,37,36,8
+COMBOBOX        IDC_SAMPLEFORMAT,40,35,72,98,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+COMBOBOX        IDC_COMPRESSION,116,35,106,98,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+COMBOBOX        IDC_WRITEMARKER,225,35,63,98,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_AMBIXSINK_CFG)
 
