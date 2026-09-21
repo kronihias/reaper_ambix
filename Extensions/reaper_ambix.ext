@@ -46,7 +46,9 @@
   item by item rather than through the render dialog. Container and compression
   are picked from a dropdown, lossless or lossy. The project can be left alone,
   or each item can gain the result as an extra take, or be pointed straight at
-  it.
+  it. A take's playback rate is not baked in: the file holds the source
+  material unstretched and the item keeps the rate, so the conversion can be
+  undone.
 
   **ambiX: Convert selected item(s) from FuMa to ambiX...**
 

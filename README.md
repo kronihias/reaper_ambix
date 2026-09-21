@@ -137,22 +137,34 @@ item pre-FX, needs no render settings, and puts each file next to its own
 source rather than in one render directory.
 
 What gets written is the **item**, not the whole source file: its own trimmed
-extent, with take gain applied, pre track FX. So two items cut out of one long
-recording become two files, and "normalize, then convert" composes the way you
-would expect. Existing files are never clobbered silently — a `-1`, `-2` suffix
-is added unless you ask for overwrite.
+extent, so two items cut out of one long recording become two files. It is the
+material the item uses, though, not the item's contribution to a mix — take and
+item volume, fades, envelopes and take FX all stay where they are, and a take's
+playback rate and pitch adjustment are *not* baked in. A stretched item
+converts to an unstretched file and keeps its rate, which is why the file can
+come out longer than the item it came from, and why the conversion can be
+undone. (The render dialog is the one that bakes everything in.) Existing files
+are never clobbered silently — a `-1`, `-2` suffix is added unless you ask for
+overwrite.
 
 A take needs a complete ambisonic set, `(N+1)^2` channels, since that is what
-the ambiX basic format stores. WavPack lossless compression is on by default;
-a positive number in the *lossy bits/sample* field switches to WavPack's
-hybrid mode at that rate (see [Lossy WavPack](#lossy-wavpack)).
+the ambiX basic format stores. Container and compression come from a dropdown
+offering the same presets the render dialog does, from uncompressed CAF through
+WavPack lossless to WavPack's hybrid mode at a chosen bit rate (see
+[Lossy WavPack](#lossy-wavpack)).
+
+*After converting* decides what happens to the project: nothing, the result
+added to each item as an extra take, or the item pointed straight at the new
+file. Replacing keeps the item's gain, fades and playback rate, so it sounds
+exactly as it did.
 
 ### ambiX: Convert selected item(s) from FuMa to ambiX...
 
 Converts Furse-Malham (classic B-format) material to the ambiX convention —
 ACN channel ordering, SN3D normalization — writing an `.ambix` file the same
-way as the action above and, optionally, adding it to the item as an extra
-take. The original take stays active and untouched, so nothing is destroyed.
+way as the action above, with the same *After converting* choice. Adding the
+result as an extra take is the default here: the FuMa original stays in the
+take list, so nothing is destroyed.
 
 FuMa is defined up to third order, so takes of 1, 3, 4, 5, 6, 7, 8, 9, 11 or 16
 channels are accepted; the reduced sets (`WXY`, `WXYUV`, …) expand to the full

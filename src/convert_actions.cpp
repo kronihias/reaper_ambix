@@ -13,10 +13,14 @@
  *  settings to touch — a dozen deliverables, or a folder of FuMa material that
  *  needs bringing into the ambiX convention.
  *
- *  What gets written is the ITEM, not the whole source file: the accessor
- *  delivers the item's own extent with its take gain applied, pre track FX.
- *  That makes "normalize, then convert" compose the way you would expect, and
- *  it means two items trimmed out of one long recording convert to two files.
+ *  What gets written is the ITEM, not the whole source file, so two items
+ *  trimmed out of one long recording convert to two files. It is the item's
+ *  extent only, though: take and item volume, fades, envelopes and take FX are
+ *  all left where they are, so what lands in the file is the material the item
+ *  uses rather than the item's contribution to a mix. Time stretching is
+ *  switched off for the read as well -- see StretchOff() -- which is what lets
+ *  a converted file take the original's place without changing how the item
+ *  sounds, and what keeps the conversion reversible.
  *
  *  The FuMa conversion deliberately does NOT use libambix's AMBIX_MATRIX_FUMA,
  *  which routes first-order X into the ambiX Z slot and adds Condon-Shortley
@@ -71,6 +75,8 @@ static int             (*GetMediaSourceNumChannels)(PCM_source *source);
 static int             (*GetMediaSourceSampleRate)(PCM_source *source);
 static void            (*GetMediaSourceFileName)(PCM_source *source, char *buf, int buf_sz);
 static double          (*GetMediaItemInfo_Value)(MediaItem *item, const char *parmname);
+static bool            (*SetMediaItemInfo_Value)(MediaItem *item, const char *parmname, double newvalue);
+static double          (*GetMediaItemTakeInfo_Value)(MediaItem_Take *take, const char *parmname);
 static const char     *(*GetTakeName)(MediaItem_Take *take);
 static AudioAccessor  *(*CreateTakeAudioAccessor)(MediaItem_Take *take);
 static void            (*DestroyAudioAccessor)(AudioAccessor *accessor);
@@ -215,12 +221,18 @@ struct ConvertEntry
   double          audioStart, audioEnd;
   std::string     outPath;
 
+  double          rate, pitch;      /* the take's stretch, as found */
+  double          itemLength;       /* item length, as found */
+  bool            stretched;        /* stretch present, and switchable off */
+  bool            stretchOff;       /* switched off right now */
+
   bool            written;
   int64_t         framesWritten;
 
   ConvertEntry() : item(NULL), take(NULL), skipReason(NULL), sourceChannels(0),
                    outChannels(0), srate(0), audioStart(0.0), audioEnd(0.0),
-                   written(false), framesWritten(0) { name[0] = 0; }
+                   rate(1.0), pitch(0.0), itemLength(0.0), stretched(false),
+                   stretchOff(false), written(false), framesWritten(0) { name[0] = 0; }
 };
 
 struct ConvertJob
@@ -265,6 +277,49 @@ static bool EntryStillValid(const ConvertEntry &e)
       && ValidatePtr2(NULL, (void *)e.take, "MediaItem_Take*");
 }
 
+/* The take audio accessor honours the take's playback rate and pitch
+ * adjustment: it returns what the item PLAYS, so a stretched take would be
+ * written out as REAPER's stretched -- and, with preserve-pitch, resynthesised
+ * -- rendering of the source. That is a one-way trip, and not what a format
+ * conversion should do, so the stretch is switched off for the duration of the
+ * read and left on the item instead.
+ *
+ * Off means rate 1 and pitch 0, with the item lengthened by the old rate so
+ * that the same span of source material is still covered. Everything else the
+ * accessor does -- sections, reverse, loop-source repetition, padding past the
+ * end of the media -- keeps working, because it is still the same accessor on
+ * the same item; a rate-2 item of length L consumes L*2 seconds of source
+ * either way. Reading the take's PCM_source directly would avoid touching the
+ * project, but at the price of reimplementing all of that here.
+ *
+ * The costs are that the item is briefly not what it was (visible if REAPER
+ * repaints mid-batch, audible if you convert while playing), and that a
+ * conversion of a stretched item marks the project dirty even when it is asked
+ * to leave the project alone. Restoring runs from JobCloseEntry, which every
+ * path out of an entry goes through, successful or not.
+ *
+ * If the setters are missing the stretch is baked in as before, and `stretched`
+ * stays false so the rest of the code knows the file holds stretched audio. */
+static void StretchOff(ConvertEntry &e)
+{
+  if (!e.stretched || e.stretchOff) return;
+  SetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE", 1.0);
+  SetMediaItemTakeInfo_Value(e.take, "D_PITCH",    0.0);
+  SetMediaItemInfo_Value(e.item, "D_LENGTH", e.itemLength * e.rate);
+  e.stretchOff = true;
+}
+
+static void StretchRestore(ConvertEntry &e)
+{
+  if (!e.stretchOff) return;
+  e.stretchOff = false;
+  if (!EntryStillValid(e)) return;   /* item went away mid-batch */
+  SetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE", e.rate);
+  SetMediaItemTakeInfo_Value(e.take, "D_PITCH",    e.pitch);
+  SetMediaItemInfo_Value(e.item, "D_LENGTH", e.itemLength);
+  if (UpdateArrange) UpdateArrange();
+}
+
 /* Close whatever the current entry has open. `keep` false means the output is
  * being abandoned — remove the half-written file rather than leaving a
  * truncated .ambix behind that looks like a successful conversion. */
@@ -280,6 +335,7 @@ static void JobCloseEntry(ConvertJob &job, bool keep)
   }
   job.matrix.clear();
   if (job.accessor) { DestroyAudioAccessor(job.accessor); job.accessor = NULL; }
+  StretchRestore(e);
 }
 
 static bool JobOpenEntry(ConvertJob &job)
@@ -292,10 +348,13 @@ static bool JobOpenEntry(ConvertJob &job)
     return false;
   }
 
+  StretchOff(e);
+
   job.accessor = CreateTakeAudioAccessor(e.take);
   if (!job.accessor)
   {
     e.skipReason = "could not read audio";
+    StretchRestore(e);
     return false;
   }
 
@@ -514,6 +573,10 @@ static WDL_DLGRET ConvertDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM 
 
     case WM_DESTROY:
       KillTimer(hwndDlg, AMBIX_CONVERT_TIMER);
+      /* Belt and braces: whatever closed the dialog, the entry in progress
+       * must not be left with its stretch switched off. Both calls are
+       * no-ops once the job has finished or already aborted. */
+      if (job) JobAbort(*job);
     return 0;
   }
   return 0;
@@ -567,6 +630,17 @@ static void BuildEntry(ConvertEntry &e, MediaItem *item, int index, bool fuma,
 
   if (!e.take)                                              { e.skipReason = "no active take";  return; }
   if (((int)GetMediaItemInfo_Value(item, "C_LOCK")) & 1)    { e.skipReason = "item locked";     return; }
+
+  /* Noted here, acted on in StretchOff() once the entry is being read. */
+  e.itemLength = GetMediaItemInfo_Value(item, "D_LENGTH");
+  if (GetMediaItemTakeInfo_Value)
+  {
+    e.rate  = GetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE");
+    e.pitch = GetMediaItemTakeInfo_Value(e.take, "D_PITCH");
+    if (!(e.rate > 0.0)) e.rate = 1.0;
+  }
+  e.stretched = (fabs(e.rate - 1.0) > 1e-9 || fabs(e.pitch) > 1e-9) &&
+                SetMediaItemTakeInfo_Value && SetMediaItemInfo_Value;
 
   PCM_source *source = GetMediaItemTake_Source(e.take);
   if (!source)                                              { e.skipReason = "no source";       return; }
@@ -653,14 +727,14 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
     if (!e.skipReason)
     {
       ++convertible;
-      job.totalSeconds += GetMediaItemInfo_Value(item, "D_LENGTH");
+      job.totalSeconds += e.itemLength * (e.stretched ? e.rate : 1.0);
     }
   }
 
   if (!convertible)
   {
     /* There is more than one way to be unconvertible -- wrong channel count,
-     * a playback rate, a locked item -- so name the actual reason per item
+     * a locked item, no place to write -- so name the actual reason per item
      * rather than guessing at the most likely one. ReportJob() would do this,
      * but it is never reached when there is nothing to convert. */
     char line[1024];
@@ -914,18 +988,19 @@ static bool AskOptions(ConvertJob &job, bool fuma, int *afterOut)
 /* Fold the finished files back into the project. Shared by both actions, and
  * a single undo point either way.
  *
- * Replacing resets the source, the start offset, the playback rate and the
- * pitch adjustment, and nothing else.
+ * Replacing changes the source and the start offset, and nothing else: the
+ * offset goes to zero because the file begins exactly where the item did.
  *
- * The rate and pitch have to go because the accessor already applied them: the
- * file holds the stretched audio, exactly as long as the item, so leaving the
- * take at rate 2 would stretch it a second time. The offset goes for the same
- * reason -- the file already begins where the item does.
+ * The playback rate and pitch stay, because the file is unstretched -- see
+ * StretchOff(). Only in the fallback case, where the stretch could not be
+ * switched off for the read and was therefore baked into the file, do they
+ * have to come off the item, which is what `stretched` distinguishes.
  *
- * Gain is the opposite case and must be left alone. The accessor bakes neither
- * take nor item volume into the file (the normalize action folds those in by
- * hand for exactly that reason), and fades and envelopes are item-level, so
- * keeping them is what makes the item sound unchanged.
+ * Gain is a different matter and must be left alone in every case. The
+ * accessor bakes neither take nor item volume into the file (the normalize
+ * action folds those in by hand for exactly that reason), and fades and
+ * envelopes are item-level, so keeping them is what makes the item sound
+ * unchanged.
  *
  * P_SOURCE rather than SetMediaItemTake_Source: the SDK is explicit that C++
  * should manage ownership itself -- retrieve the old source, set the new, then
@@ -954,27 +1029,35 @@ static void ApplyToProject(const ConvertJob &job, int after, const char *undoNam
       continue;
     }
 
+    /* What the new take has to be set to for the file to play back as the
+     * original did: the stretch the file does NOT contain. */
+    const double rate  = e.stretched ? e.rate  : 1.0;
+    const double pitch = e.stretched ? e.pitch : 0.0;
+
     if (after == AFTER_REPLACE)
     {
       PCM_source *old = (PCM_source *)GetSetMediaItemTakeInfo(e.take, "P_SOURCE", NULL);
       GetSetMediaItemTakeInfo(e.take, "P_SOURCE", fresh);
       if (old && old != fresh) PCM_Source_Destroy(old);
       SetMediaItemTakeInfo_Value(e.take, "D_STARTOFFS", 0.0);
-      SetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE",  1.0);
-      SetMediaItemTakeInfo_Value(e.take, "D_PITCH",     0.0);
+      SetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE",  rate);
+      SetMediaItemTakeInfo_Value(e.take, "D_PITCH",     pitch);
       ++done;
     }
     else /* AFTER_ADD_TAKE */
     {
       MediaItem_Take *take = AddTakeToMediaItem(e.item);
       if (!take || !SetMediaItemTake_Source(take, fresh)) continue;
-      /* The new take may inherit the old one's stretch; the file is already
-       * stretched, so neutralise it for the same reason as above. */
+      /* A new take starts at rate 1, so anything the file needs has to be set
+       * on it -- including preserve-pitch, which decides what a rate means. */
       if (SetMediaItemTakeInfo_Value)
       {
         SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", 0.0);
-        SetMediaItemTakeInfo_Value(take, "D_PLAYRATE",  1.0);
-        SetMediaItemTakeInfo_Value(take, "D_PITCH",     0.0);
+        SetMediaItemTakeInfo_Value(take, "D_PLAYRATE",  rate);
+        SetMediaItemTakeInfo_Value(take, "D_PITCH",     pitch);
+        if (GetMediaItemTakeInfo_Value)
+          SetMediaItemTakeInfo_Value(take, "B_PPITCH",
+                                     GetMediaItemTakeInfo_Value(e.take, "B_PPITCH"));
       }
       if (GetSetMediaItemTakeInfo_String)
       {
@@ -1015,15 +1098,26 @@ static int ReportJob(const ConvertJob &job, const char *heading)
       snprintf(line, sizeof(line), "  %s: %.1f s, %d ch -> %s\n",
                e.name, (double)e.framesWritten / (double)(e.srate ? e.srate : 1),
                e.outChannels, e.outPath.c_str());
+      ShowConsoleMsg(line);
       ++written;
+
+      /* Such a file is longer than the item it came from, which is worth
+       * saying out loud rather than leaving to be discovered. */
+      if (e.stretched)
+      {
+        snprintf(line, sizeof(line), "      unstretched: playback rate %g%s "
+                 "stays on the item\n", e.rate,
+                 fabs(e.pitch) > 1e-9 ? " and the pitch adjustment" : "");
+        ShowConsoleMsg(line);
+      }
     }
     else
     {
       snprintf(line, sizeof(line), "  %s: skipped (%s)\n", e.name,
                e.skipReason ? e.skipReason : "unknown");
+      ShowConsoleMsg(line);
       ++skipped;
     }
-    ShowConsoleMsg(line);
   }
 
   snprintf(line, sizeof(line), "ambiX: %d file%s written, %d skipped\n\n",
@@ -1139,6 +1233,8 @@ bool AmbixConvertActionsInit(reaper_plugin_info_t *rec)
   IMPAPI_OPT(GetMediaSourceSampleRate);
   IMPAPI_OPT(GetMediaSourceFileName);
   IMPAPI_OPT(GetMediaItemInfo_Value);
+  IMPAPI_OPT(SetMediaItemInfo_Value);
+  IMPAPI_OPT(GetMediaItemTakeInfo_Value);
   IMPAPI_OPT(CreateTakeAudioAccessor);
   IMPAPI_OPT(DestroyAudioAccessor);
   IMPAPI_OPT(GetAudioAccessorStartTime);
