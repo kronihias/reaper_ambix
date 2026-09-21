@@ -6,6 +6,7 @@
 #define IDD_ADAPTORMATRIX_DLG           104
 #define IDD_AMBIX_PROGRESS              105
 #define IDD_AMBIX_CONVERT_CFG           106
+#define IDD_AMBIX_FUMA_CFG              107
 #define IDD_MP3SINK_CFG                 155
 #define IDD_LIBSNDFILESINK_CFG          155
 #define IDD_AMBIXSINK_CFG               155
@@ -58,14 +59,15 @@
 #define IDC_CONVERT_COMPRESSION_TEXT    1033
 #define IDC_CONVERT_INFO                1034
 #define IDC_CONVERT_OVERWRITE           1035
+#define IDC_CONVERT_ADDTAKE             1036
 
 // Next default values for new objects
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        107
+#define _APS_NEXT_RESOURCE_VALUE        108
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1036
+#define _APS_NEXT_CONTROL_VALUE         1037
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

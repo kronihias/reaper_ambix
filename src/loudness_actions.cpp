@@ -173,7 +173,9 @@ struct NormalizeJob
   bool                        cancelled;
   bool                        finished;
 
-  NormalizeJob() : cur(0), accessor(NULL), meter(NULL), pos(0.0),
+  const char                 *title;       /* caption for the progress dialog */
+
+  NormalizeJob() : cur(0), accessor(NULL), meter(NULL), pos(0.0), title("ambiX"),
                    totalSeconds(0.0), doneSeconds(0.0),
                    cancelled(false), finished(false) {}
 };
@@ -339,6 +341,10 @@ static WDL_DLGRET ProgressDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM
   {
     case WM_INITDIALOG:
       SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
+      /* One progress dialog serves normalize, measure and both conversions,
+       * so the caption has to come from the job rather than the resource. */
+      if (((NormalizeJob *)lParam)->title)
+        SetWindowText(hwndDlg, ((NormalizeJob *)lParam)->title);
       SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETRANGE, 0,
                          MAKELPARAM(0, AMBIX_PROGRESS_RANGE));
       SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETPOS, 0, 0);
@@ -477,6 +483,7 @@ static void BuildEntry(NormalizeEntry &e, MediaItem *item, int index)
  * cancelled (job.cancelled says which). */
 static bool GatherAndMeasure(NormalizeJob &job, int numSelected, const char *title)
 {
+  job.title = title;
   job.entries.resize((size_t)numSelected);
 
   size_t measurable = 0;

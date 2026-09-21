@@ -79,8 +79,6 @@ static double          (*GetAudioAccessorEndTime)(AudioAccessor *accessor);
 static int             (*GetAudioAccessorSamples)(AudioAccessor *accessor, int samplerate,
                                                   int numchannels, double starttime_sec,
                                                   int numsamplesperchannel, double *samplebuffer);
-static bool            (*GetUserInputs)(const char *title, int num_inputs, const char *captions_csv,
-                                        char *retvals_csv, int retvals_csv_sz);
 static void            (*SetExtState)(const char *section, const char *key, const char *value, bool persist);
 static const char     *(*GetExtState)(const char *section, const char *key);
 static void            (*GetProjectPath)(char *buf, int buf_sz);
@@ -239,12 +237,15 @@ struct ConvertJob
   std::vector<double>       inBuf;
   std::vector<double>       outBuf;      /* only used when fuma */
 
+  const char               *title;      /* caption for the shared progress dialog */
+
   double                    totalSeconds;
   double                    doneSeconds;
   bool                      cancelled;
   bool                      finished;
 
   ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false),
+               title("ambiX"),
                  accessor(NULL), fh(NULL), pos(0.0),
                  totalSeconds(0.0), doneSeconds(0.0),
                  cancelled(false), finished(false) {}
@@ -447,6 +448,10 @@ static WDL_DLGRET ConvertDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM 
   {
     case WM_INITDIALOG:
       SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
+      /* IDD_AMBIX_PROGRESS is shared with the loudness actions, so its own
+       * caption cannot name the job. Set it from the caller. */
+      if (((ConvertJob *)lParam)->title)
+        SetWindowText(hwndDlg, ((ConvertJob *)lParam)->title);
       SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETRANGE, 0,
                          MAKELPARAM(0, AMBIX_CONVERT_RANGE));
       SendDlgItemMessage(hwndDlg, IDC_PROGRESS_BAR, PBM_SETPOS, 0, 0);
@@ -542,18 +547,6 @@ static void DescribeCompression(const ConvertJob &job, char *buf, size_t n)
   else                          snprintf(buf, n, "WavPack lossless");
 }
 
-/* GetUserInputs() hands back the fields comma-separated. Splits in place. */
-static void SplitCsv(char *csv, const char **fields, int count)
-{
-  for (int i = 0; i < count; ++i) fields[i] = "";
-  int i = 0;
-  fields[0] = csv;
-  for (char *p = csv; *p && i < count - 1; ++p)
-  {
-    if (*p == ',') { *p = 0; fields[++i] = p + 1; }
-  }
-}
-
 /* Fill in everything the conversion of one item needs, without reading audio.
  * `fuma` selects which channel-count rule applies. */
 static void BuildEntry(ConvertEntry &e, MediaItem *item, int index, bool fuma,
@@ -634,7 +627,8 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
   if (GetProjectPath) GetProjectPath(projectPath, sizeof(projectPath));
   const std::string projectDir = projectPath;
 
-  job.fuma = fuma;
+  job.fuma  = fuma;
+  job.title = title;
   job.entries.resize((size_t)numSelected);
 
   size_t convertible = 0;
@@ -685,14 +679,19 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
  * same presentation the render dialog uses, sharing its preset list, so the
  * two offer identical choices under identical names.
  *
- * The FuMa action still uses GetUserInputs; it has an extra option and no
- * dialog of its own yet.
+ * Both actions share this proc. They differ by one control, so they get one
+ * dialog resource each rather than one resource that grows and shrinks:
+ * IDD_AMBIX_CONVERT_CFG, and IDD_AMBIX_FUMA_CFG with the extra "add result as
+ * a new take" checkbox. The control IDs are the same in both, which is what
+ * lets a single proc drive them.
  * -------------------------------------------------------------------------*/
 
 struct ConvertOptions
 {
   int  compression;   /* preset item data: -1 CAF, 0 lossless, >0 lossy*100 */
   bool overwrite;
+  bool hasAddTake;    /* false for the convert dialog, which has no such box */
+  bool addTake;
 };
 
 static int CurrentItemData(HWND hwndDlg, int ctl)
@@ -770,6 +769,9 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
 
       CheckDlgButton(hwndDlg, IDC_CONVERT_OVERWRITE,
                      opt->overwrite ? BST_CHECKED : BST_UNCHECKED);
+      if (opt->hasAddTake)
+        CheckDlgButton(hwndDlg, IDC_CONVERT_ADDTAKE,
+                       opt->addTake ? BST_CHECKED : BST_UNCHECKED);
       UpdateCompressionInfo(hwndDlg);
     }
     return 1;
@@ -786,6 +788,8 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
           {
             opt->compression = CurrentItemData(hwndDlg, IDC_CONVERT_COMPRESSION);
             opt->overwrite   = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_OVERWRITE) == BST_CHECKED;
+            if (opt->hasAddTake)
+              opt->addTake = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_ADDTAKE) == BST_CHECKED;
           }
           EndDialog(hwndDlg, 1);
         return 0;
@@ -799,20 +803,25 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
   return 0;
 }
 
-/* The convert action's options, via the dialog above. */
-static bool AskConvertOptions(ConvertJob &job)
+/* Options for either action, via the dialog above. */
+static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
 {
   const char *storedWp = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK);
   const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
   const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
+  const char *storedAt = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
 
   ConvertOptions opt;
   opt.compression = AmbixCompressionData(
       ParseYesNo((storedWp && *storedWp) ? storedWp : "y", true),
       ParseBitsPerSample((storedBt && *storedBt) ? storedBt : "0"));
-  opt.overwrite = ParseYesNo((storedOw && *storedOw) ? storedOw : "n", false);
+  opt.overwrite  = ParseYesNo((storedOw && *storedOw) ? storedOw : "n", false);
+  opt.hasAddTake = fuma;
+  opt.addTake    = ParseYesNo((storedAt && *storedAt) ? storedAt : "y", true);
 
-  if (!DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_AMBIX_CONVERT_CFG),
+  if (!DialogBoxParam(g_hInst,
+                      MAKEINTRESOURCE(fuma ? IDD_AMBIX_FUMA_CFG
+                                           : IDD_AMBIX_CONVERT_CFG),
                       GetMainHwnd ? GetMainHwnd() : NULL,
                       ConvertOptionsDlgProc, (LPARAM)&opt))
     return false;   /* cancelled */
@@ -820,63 +829,15 @@ static bool AskConvertOptions(ConvertJob &job)
   job.wavpack     = AmbixCompressionUsesWavpack(opt.compression);
   job.wavpackBits = AmbixCompressionBits(opt.compression);
   job.overwrite   = opt.overwrite;
+  if (addTakeOut) *addTakeOut = fuma ? opt.addTake : false;
 
   char bits[32];
   snprintf(bits, sizeof(bits), "%g", (double)job.wavpackBits);
   SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,      job.wavpack ? "y" : "n", true);
   SetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS, bits, true);
   SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
-  return true;
-}
-
-/* Ask for the options both actions share. False if cancelled. */
-static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
-{
-  if (!fuma)
-  {
-    if (addTakeOut) *addTakeOut = false;
-    return AskConvertOptions(job);
-  }
-
-  /* FuMa still asks through GetUserInputs. It carries the extra "add as a new
-   * take" option, so it needs its own dialog resource rather than a reuse of
-   * the convert one. */
-  const char *storedWp = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK);
-  const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
-  const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
-  const char *storedAt = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
-
-  char vals[256];
-  snprintf(vals, sizeof(vals), "%s,%s,%s,%s",
-           (storedWp && *storedWp) ? storedWp : "y",
-           (storedBt && *storedBt) ? storedBt : "0",
-           (storedOw && *storedOw) ? storedOw : "n",
-           (storedAt && *storedAt) ? storedAt : "y");
-
-  if (!GetUserInputs(FUMA_TITLE, 4,
-                     "WavPack compression (y/n):,"
-                     "WavPack lossy bits/sample (0 = lossless, 2-23.9):,"
-                     "Overwrite existing files (y/n):,"
-                     "Add result as a new take (y/n):,extrawidth=60",
-                     vals, sizeof(vals)))
-    return false;
-
-  const char *fields[4];
-  SplitCsv(vals, fields, 4);
-
-  job.wavpack     = ParseYesNo(fields[0], true);
-  job.wavpackBits = ParseBitsPerSample(fields[1]);
-  job.overwrite   = ParseYesNo(fields[2], false);
-  if (addTakeOut) *addTakeOut = ParseYesNo(fields[3], true);
-
-  char bits[32];
-  snprintf(bits, sizeof(bits), "%g", (double)job.wavpackBits);
-
-  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,      job.wavpack   ? "y" : "n", true);
-  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS, bits, true);
-  SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
-  if (addTakeOut)
-    SetExtState(EXTSTATE_SECTION, KEY_ADDTAKE, *addTakeOut ? "y" : "n", true);
+  if (fuma)
+    SetExtState(EXTSTATE_SECTION, KEY_ADDTAKE, opt.addTake ? "y" : "n", true);
 
   return true;
 }
@@ -1065,7 +1026,6 @@ bool AmbixConvertActionsInit(reaper_plugin_info_t *rec)
   IMPAPI_OPT(GetAudioAccessorStartTime);
   IMPAPI_OPT(GetAudioAccessorEndTime);
   IMPAPI_OPT(GetAudioAccessorSamples);
-  IMPAPI_OPT(GetUserInputs);
   IMPAPI_OPT(SetExtState);
   IMPAPI_OPT(GetExtState);
   IMPAPI_OPT(GetMainHwnd);
