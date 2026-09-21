@@ -43,6 +43,7 @@
 #include <ambix/ambix.h>
 
 #include "fuma.h"
+#include "compression_presets.h"
 
 #include <cmath>
 #include <cstdio>
@@ -676,45 +677,197 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
   return completed && !job.cancelled;
 }
 
+/* ---------------------------------------------------------------------------
+ * options dialog (convert action)
+ *
+ * GetUserInputs() can only do text fields — no dropdowns, no checkboxes — and
+ * "0 = lossless, 2-23.9" is a poor thing to ask someone to type. This is the
+ * same presentation the render dialog uses, sharing its preset list, so the
+ * two offer identical choices under identical names.
+ *
+ * The FuMa action still uses GetUserInputs; it has an extra option and no
+ * dialog of its own yet.
+ * -------------------------------------------------------------------------*/
+
+struct ConvertOptions
+{
+  int  compression;   /* preset item data: -1 CAF, 0 lossless, >0 lossy*100 */
+  bool overwrite;
+};
+
+static int CurrentItemData(HWND hwndDlg, int ctl)
+{
+  const int sel = (int)SendDlgItemMessage(hwndDlg, ctl, CB_GETCURSEL, 0, 0);
+  if (sel < 0) return 0;
+  return (int)SendDlgItemMessage(hwndDlg, ctl, CB_GETITEMDATA, sel, 0);
+}
+
+/* A line under the dropdown saying what the choice actually costs. Lossy is
+ * the one that needs it: "6 bit/sample" means nothing on its own, and the way
+ * the noise tracks each channel is the property that makes it safe (or not)
+ * for a given bed.
+ *
+ * Deliberately no dB figure. The 6 dB-per-bit rule of thumb is a worst case
+ * for dense material; measured against tonal content the same setting came
+ * back 50 dB better, so quoting a number here would be precise and wrong. */
+static void UpdateCompressionInfo(HWND hwndDlg)
+{
+  const int data = CurrentItemData(hwndDlg, IDC_CONVERT_COMPRESSION);
+  char line[256];
+
+  if (data < 0)
+    snprintf(line, sizeof(line),
+             "Plain CAF. Largest files, readable by anything that reads ambiX.");
+  else if (data == 0)
+    snprintf(line, sizeof(line),
+             "Lossless WavPack in the ambiX container. Bit-identical, and it "
+             "packs silent higher-order channels down to almost nothing.");
+  else
+    snprintf(line, sizeof(line),
+             "Lossy WavPack at %.1f bit/sample. The noise floor tracks each "
+             "channel's own level, so quiet higher-order channels stay quiet "
+             "instead of picking up hiss.",
+             (double)AmbixCompressionBits(data));
+
+  SetDlgItemText(hwndDlg, IDC_CONVERT_INFO, line);
+}
+
+static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  ConvertOptions *opt = (ConvertOptions *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+
+  switch (uMsg)
+  {
+    case WM_INITDIALOG:
+    {
+      SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
+      opt = (ConvertOptions *)lParam;
+
+      for (int i = 0; i < kNumCompressionPresets; ++i)
+      {
+        const int n = (int)SendDlgItemMessage(hwndDlg, IDC_CONVERT_COMPRESSION,
+                                              CB_ADDSTRING, 0,
+                                              (LPARAM)kCompressionPresets[i].label);
+        SendDlgItemMessage(hwndDlg, IDC_CONVERT_COMPRESSION, CB_SETITEMDATA, n,
+                           kCompressionPresets[i].data);
+      }
+
+      /* Select the stored preset. A lossy rate that is no longer in the list
+       * falls back to the nearest lossy one rather than silently to lossless,
+       * matching selectCompression() in the render dialog. */
+      int best = 1, bestDist = -1;
+      for (int i = 0; i < kNumCompressionPresets; ++i)
+      {
+        const int d = kCompressionPresets[i].data;
+        if (d == opt->compression) { best = i; break; }
+        if (opt->compression > 0 && d > 0)
+        {
+          const int dist = abs(d - opt->compression);
+          if (bestDist < 0 || dist < bestDist) { bestDist = dist; best = i; }
+        }
+      }
+      SendDlgItemMessage(hwndDlg, IDC_CONVERT_COMPRESSION, CB_SETCURSEL, best, 0);
+
+      CheckDlgButton(hwndDlg, IDC_CONVERT_OVERWRITE,
+                     opt->overwrite ? BST_CHECKED : BST_UNCHECKED);
+      UpdateCompressionInfo(hwndDlg);
+    }
+    return 1;
+
+    case WM_COMMAND:
+      switch (LOWORD(wParam))
+      {
+        case IDC_CONVERT_COMPRESSION:
+          if (HIWORD(wParam) == CBN_SELCHANGE) UpdateCompressionInfo(hwndDlg);
+        return 0;
+
+        case IDOK:
+          if (opt)
+          {
+            opt->compression = CurrentItemData(hwndDlg, IDC_CONVERT_COMPRESSION);
+            opt->overwrite   = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_OVERWRITE) == BST_CHECKED;
+          }
+          EndDialog(hwndDlg, 1);
+        return 0;
+
+        case IDCANCEL:
+          EndDialog(hwndDlg, 0);
+        return 0;
+      }
+    return 0;
+  }
+  return 0;
+}
+
+/* The convert action's options, via the dialog above. */
+static bool AskConvertOptions(ConvertJob &job)
+{
+  const char *storedWp = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK);
+  const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
+  const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
+
+  ConvertOptions opt;
+  opt.compression = AmbixCompressionData(
+      ParseYesNo((storedWp && *storedWp) ? storedWp : "y", true),
+      ParseBitsPerSample((storedBt && *storedBt) ? storedBt : "0"));
+  opt.overwrite = ParseYesNo((storedOw && *storedOw) ? storedOw : "n", false);
+
+  if (!DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_AMBIX_CONVERT_CFG),
+                      GetMainHwnd ? GetMainHwnd() : NULL,
+                      ConvertOptionsDlgProc, (LPARAM)&opt))
+    return false;   /* cancelled */
+
+  job.wavpack     = AmbixCompressionUsesWavpack(opt.compression);
+  job.wavpackBits = AmbixCompressionBits(opt.compression);
+  job.overwrite   = opt.overwrite;
+
+  char bits[32];
+  snprintf(bits, sizeof(bits), "%g", (double)job.wavpackBits);
+  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,      job.wavpack ? "y" : "n", true);
+  SetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS, bits, true);
+  SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
+  return true;
+}
+
 /* Ask for the options both actions share. False if cancelled. */
 static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
 {
+  if (!fuma)
+  {
+    if (addTakeOut) *addTakeOut = false;
+    return AskConvertOptions(job);
+  }
+
+  /* FuMa still asks through GetUserInputs. It carries the extra "add as a new
+   * take" option, so it needs its own dialog resource rather than a reuse of
+   * the convert one. */
   const char *storedWp = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK);
   const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
   const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
   const char *storedAt = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
 
-  const int numFields = fuma ? 4 : 3;
   char vals[256];
-  if (fuma)
-    snprintf(vals, sizeof(vals), "%s,%s,%s,%s",
-             (storedWp && *storedWp) ? storedWp : "y",
-             (storedBt && *storedBt) ? storedBt : "0",
-             (storedOw && *storedOw) ? storedOw : "n",
-             (storedAt && *storedAt) ? storedAt : "y");
-  else
-    snprintf(vals, sizeof(vals), "%s,%s,%s",
-             (storedWp && *storedWp) ? storedWp : "y",
-             (storedBt && *storedBt) ? storedBt : "0",
-             (storedOw && *storedOw) ? storedOw : "n");
+  snprintf(vals, sizeof(vals), "%s,%s,%s,%s",
+           (storedWp && *storedWp) ? storedWp : "y",
+           (storedBt && *storedBt) ? storedBt : "0",
+           (storedOw && *storedOw) ? storedOw : "n",
+           (storedAt && *storedAt) ? storedAt : "y");
 
-  const char *captions = fuma
-    ? "WavPack compression (y/n):,WavPack lossy bits/sample (0 = lossless, 2-23.9):,"
-      "Overwrite existing files (y/n):,Add result as a new take (y/n):,extrawidth=60"
-    : "WavPack compression (y/n):,WavPack lossy bits/sample (0 = lossless, 2-23.9):,"
-      "Overwrite existing files (y/n):,extrawidth=60";
-
-  if (!GetUserInputs(fuma ? FUMA_TITLE : CONVERT_TITLE, numFields,
-                     captions, vals, sizeof(vals)))
+  if (!GetUserInputs(FUMA_TITLE, 4,
+                     "WavPack compression (y/n):,"
+                     "WavPack lossy bits/sample (0 = lossless, 2-23.9):,"
+                     "Overwrite existing files (y/n):,"
+                     "Add result as a new take (y/n):,extrawidth=60",
+                     vals, sizeof(vals)))
     return false;
 
   const char *fields[4];
-  SplitCsv(vals, fields, numFields);
+  SplitCsv(vals, fields, 4);
 
   job.wavpack     = ParseYesNo(fields[0], true);
   job.wavpackBits = ParseBitsPerSample(fields[1]);
   job.overwrite   = ParseYesNo(fields[2], false);
-  if (addTakeOut) *addTakeOut = fuma ? ParseYesNo(fields[3], true) : false;
+  if (addTakeOut) *addTakeOut = ParseYesNo(fields[3], true);
 
   char bits[32];
   snprintf(bits, sizeof(bits), "%g", (double)job.wavpackBits);
@@ -722,7 +875,7 @@ static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
   SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,      job.wavpack   ? "y" : "n", true);
   SetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS, bits, true);
   SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
-  if (fuma && addTakeOut)
+  if (addTakeOut)
     SetExtState(EXTSTATE_SECTION, KEY_ADDTAKE, *addTakeOut ? "y" : "n", true);
 
   return true;

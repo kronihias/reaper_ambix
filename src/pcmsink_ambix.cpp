@@ -23,6 +23,7 @@
 #endif
 
 #include "resource.h"
+#include "compression_presets.h"
 
 /* include adapter matrices */
 #include "adaptermatrices/adapter_hemi.h"
@@ -730,23 +731,8 @@ static void SetSampleformatStr(HWND hwndDlg, const char* txt, int idx)
   SendDlgItemMessage(hwndDlg, IDC_SAMPLEFORMAT, CB_SETITEMDATA, n, idx);
 }
 
-/* Compression presets for the IDC_COMPRESSION combobox. Item data:
- *   -1  uncompressed CAF
- *    0  WavPack lossless
- *   >0  WavPack hybrid (lossy) at data/100 bits per sample and channel
- * The lossy rates are WavPack's bits-per-sample form; the noise floor sits
- * about 6 dB per bit below each channel's own level, which is what makes
- * the mode usable for ambisonic beds where the higher orders are quiet. */
-struct CompressionPreset { const char *label; int data; };
-static const CompressionPreset kCompressionPresets[] = {
-  { "CAF uncompressed",             -1  },
-  { "WavPack lossless",              0  },
-  { "WavPack lossy, 6 bit/sample",   600 },
-  { "WavPack lossy, 4 bit/sample",   400 },
-  { "WavPack lossy, 3 bit/sample",   300 },
-};
-static const int kNumCompressionPresets =
-  (int)(sizeof(kCompressionPresets) / sizeof(kCompressionPresets[0]));
+/* The preset list itself now lives in compression_presets.h, shared with the
+ * convert action's dialog. */
 
 static void fillCompressionPresets(HWND hwndDlg)
 {
@@ -1401,6 +1387,11 @@ pcmsink_register_ext_t mySinkRegStruct={{GetFmt,GetExtension,ShowConfig,CreateSi
 // it just lets the deprecated path compile. Regenerating the resources for the
 // newer _BEGIN2 macro would change the dialog scaling on macOS, which is not
 // worth it for a build fix.
+//
+// Consequence: res.rc_mac_dlg is hand-maintained. A new dialog added to res.rc
+// has to be copied across by hand in the _BEGIN/_SCALE style used here --
+// running swell_resgen over res.rc rewrites the whole file into the _BEGIN2
+// form and drops the SWELL_DLG_SCALE_AUTOGEN 1.7 factor every dialog relies on.
 #ifndef SWELL_TARGET_OSX
 #define SWELL_DLG_WS_DEFAULT_SCALING 128
 #endif
