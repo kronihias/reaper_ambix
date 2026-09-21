@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="reaper_ambix" commit="f777ca513f9379d35f2cb80527bfbee73d3e979d">
+<index version="1" name="reaper_ambix" commit="df1e239f6266d3123def2b266b93c80c6ae38548">
   <category name="Extensions">
     <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions">
       <metadata>
@@ -8,7 +8,7 @@
 \widowctrl\hyphauto
 
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel0 \b \fs34 reaper_ambix\par}
-{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 REAPER extension adding read and write support for {\f1 \fs24 .ambix} files following the ambiX (Ambisonics eXchangeable) specification. Output can be written uncompressed (CAF container) or with WavPack lossless compression; reading auto-detects the container.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 REAPER extension adding read and write support for {\f1 \fs24 .ambix} files following the ambiX (Ambisonics eXchangeable) specification. Output can be written uncompressed (CAF container), with WavPack lossless compression, or with WavPack hybrid (lossy) compression at a chosen bit rate; reading auto-detects the container.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 It also adds five actions to the main action list:\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Normalize selected item(s) to target loudness (LUFS)...}\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Measures the integrated loudness of each selected item to ITU-R BS.1770 and sets the take volume so it lands on the target you enter. Ambisonic items are measured on the W channel alone; surround beds use the BS.1770-5 Annex 3 channel weighting up to 9.1.4.\par}
@@ -17,7 +17,7 @@
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Set channel count of selected track(s) and their sends...}\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Sets the track channel count on every selected track and resizes the sends that carried those tracks' full width, so a whole encoder-into-bus chain changes ambisonic order in one step. Partial routings (mono sends, offset taps, hardware outputs) are left alone.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Convert selected item(s) to .ambix file(s)...}\par}
-{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Writes each selected item out as an .ambix file next to its source media, item by item rather than through the render dialog. Optional WavPack lossless compression.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Writes each selected item out as an .ambix file next to its source media, item by item rather than through the render dialog. Container and compression are picked from a dropdown, lossless or lossy.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Convert selected item(s) from FuMa to ambiX...}\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Converts Furse-Malham (classic B-format) material to ACN/SN3D, per section 4.2.1 of the ambiX paper, up to third order including the reduced FuMa sets. The result can be added to the item as an extra take.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Restart REAPER after installing or updating.\par}
@@ -64,6 +64,28 @@
         <source platform="windows-arm64ec" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-winarm64.dll</source>
         <source platform="linux64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-x86_64.so</source>
         <source platform="linux-aarch64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.4.0/reaper_ambix-aarch64.so</source>
+      </version>
+      <version name="0.5.0" author="Matthias Kronlachner" time="2026-09-21T08:12:57Z">
+        <changelog><![CDATA[- WavPack hybrid (lossy) compression, in the render dialog and in both
+  convert actions: a chosen bit rate per sample and channel, with the noise
+  floor tracking each channel's own level so quiet higher-order channels
+  stay quiet
+- Both convert actions now use proper dialogs - compression as a dropdown
+  with the same presets the render dialog offers, and real checkboxes -
+  instead of typed y/n answers and a bits-per-sample number
+- Much faster: libambix now asks WavPack for worker threads on both the
+  encode and decode paths, which it never did before. Measured on 36
+  channels, encoding went from 10.5x to 28.4x realtime and decoding from
+  13.5x to 46.8x, with byte-identical output. Renders and conversions both
+  benefit
+- Fixed: the progress dialog is shared by every long-running action but its
+  title was fixed to "Normalize item loudness", so conversions and the
+  measure action ran under the wrong caption]]></changelog>
+        <source platform="darwin" file="reaper_ambix.dylib">https://github.com/kronihias/reaper_ambix/releases/download/v0.5.0/reaper_ambix.dylib</source>
+        <source platform="win64" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.5.0/reaper_ambix-win64.dll</source>
+        <source platform="windows-arm64ec" file="reaper_ambix.dll">https://github.com/kronihias/reaper_ambix/releases/download/v0.5.0/reaper_ambix-winarm64.dll</source>
+        <source platform="linux64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.5.0/reaper_ambix-x86_64.so</source>
+        <source platform="linux-aarch64" file="reaper_ambix.so">https://github.com/kronihias/reaper_ambix/releases/download/v0.5.0/reaper_ambix-aarch64.so</source>
       </version>
     </reapack>
   </category>
