@@ -71,6 +71,7 @@ static int             (*GetMediaSourceNumChannels)(PCM_source *source);
 static int             (*GetMediaSourceSampleRate)(PCM_source *source);
 static void            (*GetMediaSourceFileName)(PCM_source *source, char *buf, int buf_sz);
 static double          (*GetMediaItemInfo_Value)(MediaItem *item, const char *parmname);
+static double          (*GetMediaItemTakeInfo_Value)(MediaItem_Take *take, const char *parmname);
 static const char     *(*GetTakeName)(MediaItem_Take *take);
 static AudioAccessor  *(*CreateTakeAudioAccessor)(MediaItem_Take *take);
 static void            (*DestroyAudioAccessor)(AudioAccessor *accessor);
@@ -91,6 +92,9 @@ static PCM_source     *(*PCM_Source_CreateFromFile)(const char *filename);
 static bool            (*SetMediaItemTake_Source)(MediaItem_Take *take, PCM_source *source);
 static bool            (*GetSetMediaItemTakeInfo_String)(MediaItem_Take *tk, const char *parmname,
                                                          char *stringNeedBig, bool setNewValue);
+static bool            (*SetMediaItemTakeInfo_Value)(MediaItem_Take *take, const char *parmname, double newvalue);
+static void           *(*GetSetMediaItemTakeInfo)(MediaItem_Take *tk, const char *parmname, void *setNewValue);
+static void            (*PCM_Source_Destroy)(PCM_source *src);
 static void            (*Undo_BeginBlock)(void);
 static void            (*Undo_EndBlock)(const char *descchange, int extraflags);
 static void            (*UpdateArrange)(void);
@@ -100,6 +104,7 @@ static void            (*UpdateArrange)(void);
 #define KEY_WAVPACK_BITS "convert_wavpack_bits"
 #define KEY_OVERWRITE    "convert_overwrite"
 #define KEY_ADDTAKE      "convert_fuma_addtake"
+#define KEY_REPLACE      "convert_replace"
 
 #define CONVERT_TITLE "ambiX: Convert item(s) to .ambix"
 #define FUMA_TITLE    "ambiX: Convert item(s) from FuMa"
@@ -228,6 +233,7 @@ struct ConvertJob
   float                     wavpackBits; /* > 0: WavPack hybrid (lossy) bits per
                                             sample and channel; 0 = lossless */
   bool                      overwrite;
+  bool                      replace;    /* swap each item's take source for the result */
 
   /* state for the entry in progress */
   AudioAccessor            *accessor;
@@ -244,7 +250,7 @@ struct ConvertJob
   bool                      cancelled;
   bool                      finished;
 
-  ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false),
+  ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false), replace(false),
                title("ambiX"),
                  accessor(NULL), fh(NULL), pos(0.0),
                  totalSeconds(0.0), doneSeconds(0.0),
@@ -590,6 +596,25 @@ static void BuildEntry(ConvertEntry &e, MediaItem *item, int index, bool fuma,
     e.outChannels = e.sourceChannels;
   }
 
+  /* The take audio accessor ignores playback rate and pitch adjustment: it
+   * returns the source at its own rate, so a take at rate 2 converts to a file
+   * running at half the speed the item plays and covering half the material.
+   * REAPER's stretching (and its pitch-preserving modes) is not something that
+   * can be reproduced here, so rather than write a file that does not match
+   * what the item plays, leave the item alone and say why. The render dialog's
+   * "Selected media items" does honour both. */
+  if (GetMediaItemTakeInfo_Value)
+  {
+    const double rate  = GetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE");
+    const double pitch = GetMediaItemTakeInfo_Value(e.take, "D_PITCH");
+    if (fabs(rate - 1.0) > 1e-9 || fabs(pitch) > 1e-9)
+    {
+      e.skipReason = "take has a playback rate or pitch adjustment; "
+                     "render the item instead";
+      return;
+    }
+  }
+
   e.srate = GetMediaSourceSampleRate(source);
   if (e.srate < 8000) e.srate = 48000;
 
@@ -654,13 +679,31 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
 
   if (!convertible)
   {
+    /* There is more than one way to be unconvertible -- wrong channel count,
+     * a playback rate, a locked item -- so name the actual reason per item
+     * rather than guessing at the most likely one. ReportJob() would do this,
+     * but it is never reached when there is nothing to convert. */
+    char line[1024];
+    snprintf(line, sizeof(line), "%s: nothing to convert\n", title);
+    ShowConsoleMsg(line);
+    for (size_t i = 0; i < job.entries.size(); ++i)
+    {
+      const ConvertEntry &e = job.entries[i];
+      snprintf(line, sizeof(line), "  %s: skipped (%s)\n", e.name,
+               e.skipReason ? e.skipReason : "unknown");
+      ShowConsoleMsg(line);
+    }
+    ShowConsoleMsg("\n");
+
     ShowMessageBox(fuma
       ? "None of the selected items could be converted.\n\n"
-        "FuMa is defined up to third order, so a take needs 1, 3, 4, 5, 6, 7,\n"
-        "8, 9, 11 or 16 channels."
+        "The reason for each is listed in the ReaScript console. FuMa is\n"
+        "defined up to third order, so a take needs 1, 3, 4, 5, 6, 7, 8, 9,\n"
+        "11 or 16 channels."
       : "None of the selected items could be converted.\n\n"
-        "An ambiX file stores a complete ambisonic set, so a take needs\n"
-        "(N+1)^2 channels: 4, 9, 16, 25, 36, ...",
+        "The reason for each is listed in the ReaScript console. An ambiX\n"
+        "file stores a complete ambisonic set, so a take needs (N+1)^2\n"
+        "channels: 4, 9, 16, 25, 36, ...",
       title, 0);
     return false;
   }
@@ -692,6 +735,8 @@ struct ConvertOptions
   bool overwrite;
   bool hasAddTake;    /* false for the convert dialog, which has no such box */
   bool addTake;
+  bool hasReplace;    /* false for the FuMa dialog, likewise */
+  bool replace;
 };
 
 static int CurrentItemData(HWND hwndDlg, int ctl)
@@ -772,6 +817,9 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
       if (opt->hasAddTake)
         CheckDlgButton(hwndDlg, IDC_CONVERT_ADDTAKE,
                        opt->addTake ? BST_CHECKED : BST_UNCHECKED);
+      if (opt->hasReplace)
+        CheckDlgButton(hwndDlg, IDC_CONVERT_REPLACE,
+                       opt->replace ? BST_CHECKED : BST_UNCHECKED);
       UpdateCompressionInfo(hwndDlg);
     }
     return 1;
@@ -790,6 +838,8 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
             opt->overwrite   = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_OVERWRITE) == BST_CHECKED;
             if (opt->hasAddTake)
               opt->addTake = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_ADDTAKE) == BST_CHECKED;
+            if (opt->hasReplace)
+              opt->replace = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_REPLACE) == BST_CHECKED;
           }
           EndDialog(hwndDlg, 1);
         return 0;
@@ -810,6 +860,7 @@ static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
   const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
   const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
   const char *storedAt = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
+  const char *storedRp = GetExtState(EXTSTATE_SECTION, KEY_REPLACE);
 
   ConvertOptions opt;
   opt.compression = AmbixCompressionData(
@@ -818,6 +869,12 @@ static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
   opt.overwrite  = ParseYesNo((storedOw && *storedOw) ? storedOw : "n", false);
   opt.hasAddTake = fuma;
   opt.addTake    = ParseYesNo((storedAt && *storedAt) ? storedAt : "y", true);
+  /* Replacing needs API the FuMa path does not use; without it the box would
+   * be a promise we cannot keep, so it is simply not offered. */
+  opt.hasReplace = !fuma && GetSetMediaItemTakeInfo && PCM_Source_CreateFromFile &&
+                   SetMediaItemTakeInfo_Value && PCM_Source_Destroy;
+  opt.replace    = opt.hasReplace &&
+                   ParseYesNo((storedRp && *storedRp) ? storedRp : "n", false);
 
   if (!DialogBoxParam(g_hInst,
                       MAKEINTRESOURCE(fuma ? IDD_AMBIX_FUMA_CFG
@@ -829,6 +886,7 @@ static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
   job.wavpack     = AmbixCompressionUsesWavpack(opt.compression);
   job.wavpackBits = AmbixCompressionBits(opt.compression);
   job.overwrite   = opt.overwrite;
+  job.replace     = opt.hasReplace && opt.replace;
   if (addTakeOut) *addTakeOut = fuma ? opt.addTake : false;
 
   char bits[32];
@@ -838,6 +896,8 @@ static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
   SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
   if (fuma)
     SetExtState(EXTSTATE_SECTION, KEY_ADDTAKE, opt.addTake ? "y" : "n", true);
+  if (opt.hasReplace)
+    SetExtState(EXTSTATE_SECTION, KEY_REPLACE, opt.replace ? "y" : "n", true);
 
   return true;
 }
@@ -903,8 +963,55 @@ static void ConvertSelectedItemsToAmbix()
   DescribeCompression(job, compression, sizeof(compression));
   snprintf(heading, sizeof(heading), "ambiX: converting %d item%s to .ambix (%s)",
            numSelected, numSelected == 1 ? "" : "s", compression);
-  ReportJob(job, heading);
-  /* Files were written; the project itself is untouched, so no undo point. */
+  const int written = ReportJob(job, heading);
+
+  if (!job.replace || !written) return;   /* project untouched, nothing to undo */
+
+  /* Point each converted item at its new file.
+   *
+   * Only the source and the start offset change. The accessor bakes neither
+   * take nor item gain into the file (the normalize action folds those in by
+   * hand for exactly that reason), and fades and envelopes are item-level, so
+   * leaving all of them alone is what keeps the item sounding identical. The
+   * offset goes to zero because the file already begins where the item does.
+   *
+   * P_SOURCE rather than SetMediaItemTake_Source: the SDK is explicit that C++
+   * should manage ownership itself -- retrieve the old source, set the new,
+   * then destroy the old -- and that the convenience wrapper would duplicate
+   * the source instead. */
+  Undo_BeginBlock();
+
+  int replaced = 0;
+  char line[1024];
+  for (size_t i = 0; i < job.entries.size(); ++i)
+  {
+    const ConvertEntry &e = job.entries[i];
+    if (!e.written || !EntryStillValid(e)) continue;
+
+    PCM_source *fresh = PCM_Source_CreateFromFile(e.outPath.c_str());
+    if (!fresh)
+    {
+      snprintf(line, sizeof(line), "  %s: converted, but the new file could "
+               "not be opened - item left as it was\n", e.name);
+      ShowConsoleMsg(line);
+      continue;
+    }
+
+    PCM_source *old = (PCM_source *)GetSetMediaItemTakeInfo(e.take, "P_SOURCE", NULL);
+    GetSetMediaItemTakeInfo(e.take, "P_SOURCE", fresh);
+    if (old && old != fresh) PCM_Source_Destroy(old);
+
+    SetMediaItemTakeInfo_Value(e.take, "D_STARTOFFS", 0.0);
+    ++replaced;
+  }
+
+  snprintf(line, sizeof(line), "ambiX: %d item%s now point%s at the converted "
+           "file%s\n\n", replaced, replaced == 1 ? "" : "s",
+           replaced == 1 ? "s" : "", replaced == 1 ? "" : "s");
+  ShowConsoleMsg(line);
+
+  Undo_EndBlock("ambiX: Convert item(s) to .ambix", UNDO_STATE_ITEMS);
+  UpdateArrange();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1021,6 +1128,7 @@ bool AmbixConvertActionsInit(reaper_plugin_info_t *rec)
   IMPAPI_OPT(GetMediaSourceSampleRate);
   IMPAPI_OPT(GetMediaSourceFileName);
   IMPAPI_OPT(GetMediaItemInfo_Value);
+  IMPAPI_OPT(GetMediaItemTakeInfo_Value);
   IMPAPI_OPT(CreateTakeAudioAccessor);
   IMPAPI_OPT(DestroyAudioAccessor);
   IMPAPI_OPT(GetAudioAccessorStartTime);
@@ -1043,6 +1151,9 @@ bool AmbixConvertActionsInit(reaper_plugin_info_t *rec)
   *((void **)&PCM_Source_CreateFromFile)      = (void *)rec->GetFunc("PCM_Source_CreateFromFile");
   *((void **)&SetMediaItemTake_Source)        = (void *)rec->GetFunc("SetMediaItemTake_Source");
   *((void **)&GetSetMediaItemTakeInfo_String) = (void *)rec->GetFunc("GetSetMediaItemTakeInfo_String");
+  *((void **)&SetMediaItemTakeInfo_Value)    = (void *)rec->GetFunc("SetMediaItemTakeInfo_Value");
+  *((void **)&GetSetMediaItemTakeInfo)       = (void *)rec->GetFunc("GetSetMediaItemTakeInfo");
+  *((void **)&PCM_Source_Destroy)            = (void *)rec->GetFunc("PCM_Source_Destroy");
 
 #ifdef _WIN32
   InitCommonControls();
