@@ -6,7 +6,6 @@
 #define IDD_ADAPTORMATRIX_DLG           104
 #define IDD_AMBIX_PROGRESS              105
 #define IDD_AMBIX_CONVERT_CFG           106
-#define IDD_AMBIX_FUMA_CFG              107
 #define IDD_MP3SINK_CFG                 155
 #define IDD_LIBSNDFILESINK_CFG          155
 #define IDD_AMBIXSINK_CFG               155
@@ -59,8 +58,8 @@
 #define IDC_CONVERT_COMPRESSION_TEXT    1033
 #define IDC_CONVERT_INFO                1034
 #define IDC_CONVERT_OVERWRITE           1035
-#define IDC_CONVERT_ADDTAKE             1036
-#define IDC_CONVERT_REPLACE             1037
+#define IDC_CONVERT_AFTER               1036
+#define IDC_CONVERT_AFTER_TEXT          1037
 
 // Next default values for new objects
 //

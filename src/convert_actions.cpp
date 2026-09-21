@@ -71,7 +71,6 @@ static int             (*GetMediaSourceNumChannels)(PCM_source *source);
 static int             (*GetMediaSourceSampleRate)(PCM_source *source);
 static void            (*GetMediaSourceFileName)(PCM_source *source, char *buf, int buf_sz);
 static double          (*GetMediaItemInfo_Value)(MediaItem *item, const char *parmname);
-static double          (*GetMediaItemTakeInfo_Value)(MediaItem_Take *take, const char *parmname);
 static const char     *(*GetTakeName)(MediaItem_Take *take);
 static AudioAccessor  *(*CreateTakeAudioAccessor)(MediaItem_Take *take);
 static void            (*DestroyAudioAccessor)(AudioAccessor *accessor);
@@ -103,8 +102,9 @@ static void            (*UpdateArrange)(void);
 #define KEY_WAVPACK      "convert_wavpack"
 #define KEY_WAVPACK_BITS "convert_wavpack_bits"
 #define KEY_OVERWRITE    "convert_overwrite"
-#define KEY_ADDTAKE      "convert_fuma_addtake"
-#define KEY_REPLACE      "convert_replace"
+#define KEY_ADDTAKE      "convert_fuma_addtake"  /* pre-0.6 FuMa preference */
+#define KEY_AFTER        "convert_after"
+#define KEY_AFTER_FUMA   "convert_fuma_after"
 
 #define CONVERT_TITLE "ambiX: Convert item(s) to .ambix"
 #define FUMA_TITLE    "ambiX: Convert item(s) from FuMa"
@@ -233,7 +233,6 @@ struct ConvertJob
   float                     wavpackBits; /* > 0: WavPack hybrid (lossy) bits per
                                             sample and channel; 0 = lossless */
   bool                      overwrite;
-  bool                      replace;    /* swap each item's take source for the result */
 
   /* state for the entry in progress */
   AudioAccessor            *accessor;
@@ -250,7 +249,7 @@ struct ConvertJob
   bool                      cancelled;
   bool                      finished;
 
-  ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false), replace(false),
+  ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false),
                title("ambiX"),
                  accessor(NULL), fh(NULL), pos(0.0),
                  totalSeconds(0.0), doneSeconds(0.0),
@@ -596,25 +595,6 @@ static void BuildEntry(ConvertEntry &e, MediaItem *item, int index, bool fuma,
     e.outChannels = e.sourceChannels;
   }
 
-  /* The take audio accessor ignores playback rate and pitch adjustment: it
-   * returns the source at its own rate, so a take at rate 2 converts to a file
-   * running at half the speed the item plays and covering half the material.
-   * REAPER's stretching (and its pitch-preserving modes) is not something that
-   * can be reproduced here, so rather than write a file that does not match
-   * what the item plays, leave the item alone and say why. The render dialog's
-   * "Selected media items" does honour both. */
-  if (GetMediaItemTakeInfo_Value)
-  {
-    const double rate  = GetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE");
-    const double pitch = GetMediaItemTakeInfo_Value(e.take, "D_PITCH");
-    if (fabs(rate - 1.0) > 1e-9 || fabs(pitch) > 1e-9)
-    {
-      e.skipReason = "take has a playback rate or pitch adjustment; "
-                     "render the item instead";
-      return;
-    }
-  }
-
   e.srate = GetMediaSourceSampleRate(source);
   if (e.srate < 8000) e.srate = 48000;
 
@@ -722,21 +702,27 @@ static bool GatherAndConvert(ConvertJob &job, int numSelected, bool fuma,
  * same presentation the render dialog uses, sharing its preset list, so the
  * two offer identical choices under identical names.
  *
- * Both actions share this proc. They differ by one control, so they get one
- * dialog resource each rather than one resource that grows and shrinks:
- * IDD_AMBIX_CONVERT_CFG, and IDD_AMBIX_FUMA_CFG with the extra "add result as
- * a new take" checkbox. The control IDs are the same in both, which is what
- * lets a single proc drive them.
+ * Both actions share this dialog outright, caption included -- it is set at
+ * runtime, since the two differ in nothing else. What happens to the project
+ * afterwards is one dropdown rather than a checkbox per outcome: "add as a new
+ * take" and "replace the item" are alternatives, and two checkboxes would let
+ * you ask for both.
  * -------------------------------------------------------------------------*/
+
+#define AFTER_NOTHING   0
+#define AFTER_ADD_TAKE  1
+#define AFTER_REPLACE   2
 
 struct ConvertOptions
 {
   int  compression;   /* preset item data: -1 CAF, 0 lossless, >0 lossy*100 */
   bool overwrite;
-  bool hasAddTake;    /* false for the convert dialog, which has no such box */
-  bool addTake;
-  bool hasReplace;    /* false for the FuMa dialog, likewise */
-  bool replace;
+  /* What to do to the project once the files exist. Both actions offer the
+   * same choices, so they share one dialog; only the caption differs. */
+  int  after;         /* AFTER_NOTHING / AFTER_ADD_TAKE / AFTER_REPLACE */
+  bool canAddTake;    /* the API needed is present */
+  bool canReplace;
+  const char *title;  /* the dialog resource carries no caption of its own */
 };
 
 static int CurrentItemData(HWND hwndDlg, int ctl)
@@ -786,6 +772,7 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
     {
       SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
       opt = (ConvertOptions *)lParam;
+      if (opt->title) SetWindowText(hwndDlg, opt->title);
 
       for (int i = 0; i < kNumCompressionPresets; ++i)
       {
@@ -814,12 +801,29 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
 
       CheckDlgButton(hwndDlg, IDC_CONVERT_OVERWRITE,
                      opt->overwrite ? BST_CHECKED : BST_UNCHECKED);
-      if (opt->hasAddTake)
-        CheckDlgButton(hwndDlg, IDC_CONVERT_ADDTAKE,
-                       opt->addTake ? BST_CHECKED : BST_UNCHECKED);
-      if (opt->hasReplace)
-        CheckDlgButton(hwndDlg, IDC_CONVERT_REPLACE,
-                       opt->replace ? BST_CHECKED : BST_UNCHECKED);
+      /* Only offer what the running REAPER can actually do. */
+      {
+        int sel = 0, n;
+        n = (int)SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_ADDSTRING, 0,
+                                    (LPARAM)"Leave the project unchanged");
+        SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_SETITEMDATA, n, AFTER_NOTHING);
+
+        if (opt->canAddTake)
+        {
+          n = (int)SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_ADDSTRING, 0,
+                                      (LPARAM)"Add the result as a new take");
+          SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_SETITEMDATA, n, AFTER_ADD_TAKE);
+          if (opt->after == AFTER_ADD_TAKE) sel = n;
+        }
+        if (opt->canReplace)
+        {
+          n = (int)SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_ADDSTRING, 0,
+                                      (LPARAM)"Replace the item with the result");
+          SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_SETITEMDATA, n, AFTER_REPLACE);
+          if (opt->after == AFTER_REPLACE) sel = n;
+        }
+        SendDlgItemMessage(hwndDlg, IDC_CONVERT_AFTER, CB_SETCURSEL, sel, 0);
+      }
       UpdateCompressionInfo(hwndDlg);
     }
     return 1;
@@ -836,10 +840,7 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
           {
             opt->compression = CurrentItemData(hwndDlg, IDC_CONVERT_COMPRESSION);
             opt->overwrite   = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_OVERWRITE) == BST_CHECKED;
-            if (opt->hasAddTake)
-              opt->addTake = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_ADDTAKE) == BST_CHECKED;
-            if (opt->hasReplace)
-              opt->replace = IsDlgButtonChecked(hwndDlg, IDC_CONVERT_REPLACE) == BST_CHECKED;
+            opt->after = CurrentItemData(hwndDlg, IDC_CONVERT_AFTER);
           }
           EndDialog(hwndDlg, 1);
         return 0;
@@ -854,31 +855,43 @@ static WDL_DLGRET ConvertOptionsDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, 
 }
 
 /* Options for either action, via the dialog above. */
-static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
+static bool AskOptions(ConvertJob &job, bool fuma, int *afterOut)
 {
   const char *storedWp = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK);
   const char *storedBt = GetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS);
   const char *storedOw = GetExtState(EXTSTATE_SECTION, KEY_OVERWRITE);
-  const char *storedAt = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
-  const char *storedRp = GetExtState(EXTSTATE_SECTION, KEY_REPLACE);
+  const char *afterKey = fuma ? KEY_AFTER_FUMA : KEY_AFTER;
+  const char *storedAf = GetExtState(EXTSTATE_SECTION, afterKey);
 
   ConvertOptions opt;
   opt.compression = AmbixCompressionData(
       ParseYesNo((storedWp && *storedWp) ? storedWp : "y", true),
       ParseBitsPerSample((storedBt && *storedBt) ? storedBt : "0"));
-  opt.overwrite  = ParseYesNo((storedOw && *storedOw) ? storedOw : "n", false);
-  opt.hasAddTake = fuma;
-  opt.addTake    = ParseYesNo((storedAt && *storedAt) ? storedAt : "y", true);
-  /* Replacing needs API the FuMa path does not use; without it the box would
-   * be a promise we cannot keep, so it is simply not offered. */
-  opt.hasReplace = !fuma && GetSetMediaItemTakeInfo && PCM_Source_CreateFromFile &&
-                   SetMediaItemTakeInfo_Value && PCM_Source_Destroy;
-  opt.replace    = opt.hasReplace &&
-                   ParseYesNo((storedRp && *storedRp) ? storedRp : "n", false);
+  opt.overwrite = ParseYesNo((storedOw && *storedOw) ? storedOw : "n", false);
+  opt.title     = fuma ? FUMA_TITLE : CONVERT_TITLE;
 
-  if (!DialogBoxParam(g_hInst,
-                      MAKEINTRESOURCE(fuma ? IDD_AMBIX_FUMA_CFG
-                                           : IDD_AMBIX_CONVERT_CFG),
+  opt.canAddTake = AddTakeToMediaItem && PCM_Source_CreateFromFile &&
+                   SetMediaItemTake_Source;
+  opt.canReplace = GetSetMediaItemTakeInfo && PCM_Source_CreateFromFile &&
+                   SetMediaItemTakeInfo_Value && PCM_Source_Destroy;
+
+  if (storedAf && *storedAf)
+    opt.after = atoi(storedAf);
+  else if (fuma)
+  {
+    /* Before 0.6 the FuMa action stored a yes/no "add as a new take"; carry
+     * that across so an existing preference is not silently reset. */
+    const char *legacy = GetExtState(EXTSTATE_SECTION, KEY_ADDTAKE);
+    opt.after = ParseYesNo((legacy && *legacy) ? legacy : "y", true)
+                  ? AFTER_ADD_TAKE : AFTER_NOTHING;
+  }
+  else
+    opt.after = AFTER_NOTHING;
+
+  if (opt.after == AFTER_ADD_TAKE && !opt.canAddTake) opt.after = AFTER_NOTHING;
+  if (opt.after == AFTER_REPLACE  && !opt.canReplace) opt.after = AFTER_NOTHING;
+
+  if (!DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_AMBIX_CONVERT_CFG),
                       GetMainHwnd ? GetMainHwnd() : NULL,
                       ConvertOptionsDlgProc, (LPARAM)&opt))
     return false;   /* cancelled */
@@ -886,20 +899,104 @@ static bool AskOptions(ConvertJob &job, bool fuma, bool *addTakeOut)
   job.wavpack     = AmbixCompressionUsesWavpack(opt.compression);
   job.wavpackBits = AmbixCompressionBits(opt.compression);
   job.overwrite   = opt.overwrite;
-  job.replace     = opt.hasReplace && opt.replace;
-  if (addTakeOut) *addTakeOut = fuma ? opt.addTake : false;
+  if (afterOut) *afterOut = opt.after;
 
-  char bits[32];
-  snprintf(bits, sizeof(bits), "%g", (double)job.wavpackBits);
+  char bits[32], after[16];
+  snprintf(bits,  sizeof(bits),  "%g", (double)job.wavpackBits);
+  snprintf(after, sizeof(after), "%d", opt.after);
   SetExtState(EXTSTATE_SECTION, KEY_WAVPACK,      job.wavpack ? "y" : "n", true);
   SetExtState(EXTSTATE_SECTION, KEY_WAVPACK_BITS, bits, true);
   SetExtState(EXTSTATE_SECTION, KEY_OVERWRITE,    job.overwrite ? "y" : "n", true);
-  if (fuma)
-    SetExtState(EXTSTATE_SECTION, KEY_ADDTAKE, opt.addTake ? "y" : "n", true);
-  if (opt.hasReplace)
-    SetExtState(EXTSTATE_SECTION, KEY_REPLACE, opt.replace ? "y" : "n", true);
-
+  SetExtState(EXTSTATE_SECTION, afterKey,         after, true);
   return true;
+}
+
+/* Fold the finished files back into the project. Shared by both actions, and
+ * a single undo point either way.
+ *
+ * Replacing resets the source, the start offset, the playback rate and the
+ * pitch adjustment, and nothing else.
+ *
+ * The rate and pitch have to go because the accessor already applied them: the
+ * file holds the stretched audio, exactly as long as the item, so leaving the
+ * take at rate 2 would stretch it a second time. The offset goes for the same
+ * reason -- the file already begins where the item does.
+ *
+ * Gain is the opposite case and must be left alone. The accessor bakes neither
+ * take nor item volume into the file (the normalize action folds those in by
+ * hand for exactly that reason), and fades and envelopes are item-level, so
+ * keeping them is what makes the item sound unchanged.
+ *
+ * P_SOURCE rather than SetMediaItemTake_Source: the SDK is explicit that C++
+ * should manage ownership itself -- retrieve the old source, set the new, then
+ * destroy the old -- and that the convenience wrapper duplicates the source
+ * instead. Adding a take is different: the take is new and owns nothing yet,
+ * so the wrapper is the right call there. */
+static void ApplyToProject(const ConvertJob &job, int after, const char *undoName)
+{
+  if (after == AFTER_NOTHING) return;
+
+  Undo_BeginBlock();
+
+  int done = 0;
+  char line[1024];
+  for (size_t i = 0; i < job.entries.size(); ++i)
+  {
+    const ConvertEntry &e = job.entries[i];
+    if (!e.written || !EntryStillValid(e)) continue;
+
+    PCM_source *fresh = PCM_Source_CreateFromFile(e.outPath.c_str());
+    if (!fresh)
+    {
+      snprintf(line, sizeof(line), "  %s: converted, but the new file could "
+               "not be opened - item left as it was\n", e.name);
+      ShowConsoleMsg(line);
+      continue;
+    }
+
+    if (after == AFTER_REPLACE)
+    {
+      PCM_source *old = (PCM_source *)GetSetMediaItemTakeInfo(e.take, "P_SOURCE", NULL);
+      GetSetMediaItemTakeInfo(e.take, "P_SOURCE", fresh);
+      if (old && old != fresh) PCM_Source_Destroy(old);
+      SetMediaItemTakeInfo_Value(e.take, "D_STARTOFFS", 0.0);
+      SetMediaItemTakeInfo_Value(e.take, "D_PLAYRATE",  1.0);
+      SetMediaItemTakeInfo_Value(e.take, "D_PITCH",     0.0);
+      ++done;
+    }
+    else /* AFTER_ADD_TAKE */
+    {
+      MediaItem_Take *take = AddTakeToMediaItem(e.item);
+      if (!take || !SetMediaItemTake_Source(take, fresh)) continue;
+      /* The new take may inherit the old one's stretch; the file is already
+       * stretched, so neutralise it for the same reason as above. */
+      if (SetMediaItemTakeInfo_Value)
+      {
+        SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", 0.0);
+        SetMediaItemTakeInfo_Value(take, "D_PLAYRATE",  1.0);
+        SetMediaItemTakeInfo_Value(take, "D_PITCH",     0.0);
+      }
+      if (GetSetMediaItemTakeInfo_String)
+      {
+        char takeName[300];
+        snprintf(takeName, sizeof(takeName), "%s (ambiX)", e.name);
+        GetSetMediaItemTakeInfo_String(take, "P_NAME", takeName, true);
+      }
+      ++done;
+    }
+  }
+
+  if (after == AFTER_REPLACE)
+    snprintf(line, sizeof(line), "ambiX: %d item%s now point%s at the converted "
+             "file%s\n\n", done, done == 1 ? "" : "s", done == 1 ? "s" : "",
+             done == 1 ? "" : "s");
+  else
+    snprintf(line, sizeof(line), "ambiX: %d converted take%s added\n\n",
+             done, done == 1 ? "" : "s");
+  ShowConsoleMsg(line);
+
+  Undo_EndBlock(undoName, UNDO_STATE_ITEMS);
+  UpdateArrange();
 }
 
 /* Shared reporting. Returns how many files were written. */
@@ -949,8 +1046,9 @@ static void ConvertSelectedItemsToAmbix()
     return;
   }
 
+  int after = AFTER_NOTHING;
   ConvertJob job;
-  if (!AskOptions(job, false, NULL)) return;
+  if (!AskOptions(job, false, &after)) return;
 
   if (!GatherAndConvert(job, numSelected, false, CONVERT_TITLE))
   {
@@ -963,55 +1061,9 @@ static void ConvertSelectedItemsToAmbix()
   DescribeCompression(job, compression, sizeof(compression));
   snprintf(heading, sizeof(heading), "ambiX: converting %d item%s to .ambix (%s)",
            numSelected, numSelected == 1 ? "" : "s", compression);
-  const int written = ReportJob(job, heading);
 
-  if (!job.replace || !written) return;   /* project untouched, nothing to undo */
-
-  /* Point each converted item at its new file.
-   *
-   * Only the source and the start offset change. The accessor bakes neither
-   * take nor item gain into the file (the normalize action folds those in by
-   * hand for exactly that reason), and fades and envelopes are item-level, so
-   * leaving all of them alone is what keeps the item sounding identical. The
-   * offset goes to zero because the file already begins where the item does.
-   *
-   * P_SOURCE rather than SetMediaItemTake_Source: the SDK is explicit that C++
-   * should manage ownership itself -- retrieve the old source, set the new,
-   * then destroy the old -- and that the convenience wrapper would duplicate
-   * the source instead. */
-  Undo_BeginBlock();
-
-  int replaced = 0;
-  char line[1024];
-  for (size_t i = 0; i < job.entries.size(); ++i)
-  {
-    const ConvertEntry &e = job.entries[i];
-    if (!e.written || !EntryStillValid(e)) continue;
-
-    PCM_source *fresh = PCM_Source_CreateFromFile(e.outPath.c_str());
-    if (!fresh)
-    {
-      snprintf(line, sizeof(line), "  %s: converted, but the new file could "
-               "not be opened - item left as it was\n", e.name);
-      ShowConsoleMsg(line);
-      continue;
-    }
-
-    PCM_source *old = (PCM_source *)GetSetMediaItemTakeInfo(e.take, "P_SOURCE", NULL);
-    GetSetMediaItemTakeInfo(e.take, "P_SOURCE", fresh);
-    if (old && old != fresh) PCM_Source_Destroy(old);
-
-    SetMediaItemTakeInfo_Value(e.take, "D_STARTOFFS", 0.0);
-    ++replaced;
-  }
-
-  snprintf(line, sizeof(line), "ambiX: %d item%s now point%s at the converted "
-           "file%s\n\n", replaced, replaced == 1 ? "" : "s",
-           replaced == 1 ? "s" : "", replaced == 1 ? "" : "s");
-  ShowConsoleMsg(line);
-
-  Undo_EndBlock("ambiX: Convert item(s) to .ambix", UNDO_STATE_ITEMS);
-  UpdateArrange();
+  if (ReportJob(job, heading))
+    ApplyToProject(job, after, "ambiX: Convert item(s) to .ambix");
 }
 
 /* ---------------------------------------------------------------------------
@@ -1029,15 +1081,9 @@ static void ConvertSelectedItemsFromFuMa()
     return;
   }
 
-  bool addTake = true;
+  int after = AFTER_NOTHING;
   ConvertJob job;
-  if (!AskOptions(job, true, &addTake)) return;
-
-  /* Adding takes needs API we may not have; fall back to writing files only
-   * rather than half-doing it. */
-  if (addTake && (!AddTakeToMediaItem || !PCM_Source_CreateFromFile ||
-                  !SetMediaItemTake_Source))
-    addTake = false;
+  if (!AskOptions(job, true, &after)) return;
 
   if (!GatherAndConvert(job, numSelected, true, FUMA_TITLE))
   {
@@ -1051,44 +1097,9 @@ static void ConvertSelectedItemsFromFuMa()
   snprintf(heading, sizeof(heading),
            "ambiX: converting %d item%s from FuMa to ambiX (%s)",
            numSelected, numSelected == 1 ? "" : "s", compression);
-  const int written = ReportJob(job, heading);
 
-  if (!written || !addTake) return;
-
-  /* The converted file goes on as an additional take rather than replacing
-   * the original, so the FuMa source stays reachable from the take list. */
-  Undo_BeginBlock();
-
-  int added = 0;
-  for (size_t i = 0; i < job.entries.size(); ++i)
-  {
-    const ConvertEntry &e = job.entries[i];
-    if (!e.written || !EntryStillValid(e)) continue;
-
-    PCM_source *src = PCM_Source_CreateFromFile(e.outPath.c_str());
-    if (!src) continue;
-
-    MediaItem_Take *take = AddTakeToMediaItem(e.item);
-    if (!take) { continue; }
-
-    if (!SetMediaItemTake_Source(take, src)) continue;
-
-    if (GetSetMediaItemTakeInfo_String)
-    {
-      char takeName[300];
-      snprintf(takeName, sizeof(takeName), "%s (ambiX)", e.name);
-      GetSetMediaItemTakeInfo_String(take, "P_NAME", takeName, true);
-    }
-    ++added;
-  }
-
-  char line[256];
-  snprintf(line, sizeof(line), "ambiX: %d converted take%s added\n\n",
-           added, added == 1 ? "" : "s");
-  ShowConsoleMsg(line);
-
-  Undo_EndBlock("ambiX: Convert item(s) from FuMa to ambiX", UNDO_STATE_ITEMS);
-  UpdateArrange();
+  if (ReportJob(job, heading))
+    ApplyToProject(job, after, "ambiX: Convert item(s) from FuMa to ambiX");
 }
 
 /* ---------------------------------------------------------------------------
@@ -1128,7 +1139,6 @@ bool AmbixConvertActionsInit(reaper_plugin_info_t *rec)
   IMPAPI_OPT(GetMediaSourceSampleRate);
   IMPAPI_OPT(GetMediaSourceFileName);
   IMPAPI_OPT(GetMediaItemInfo_Value);
-  IMPAPI_OPT(GetMediaItemTakeInfo_Value);
   IMPAPI_OPT(CreateTakeAudioAccessor);
   IMPAPI_OPT(DestroyAudioAccessor);
   IMPAPI_OPT(GetAudioAccessorStartTime);

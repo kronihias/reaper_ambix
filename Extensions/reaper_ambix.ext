@@ -44,13 +44,15 @@
 
   Writes each selected item out as an .ambix file next to its source media,
   item by item rather than through the render dialog. Container and compression
-  are picked from a dropdown, lossless or lossy.
+  are picked from a dropdown, lossless or lossy. The project can be left alone,
+  or each item can gain the result as an extra take, or be pointed straight at
+  it.
 
   **ambiX: Convert selected item(s) from FuMa to ambiX...**
 
   Converts Furse-Malham (classic B-format) material to ACN/SN3D, per section
   4.2.1 of the ambiX paper, up to third order including the reduced FuMa sets.
-  The result can be added to the item as an extra take.
+  The result can be added to the item as an extra take, or replace it.
 
   Restart REAPER after installing or updating.
 @changelog
