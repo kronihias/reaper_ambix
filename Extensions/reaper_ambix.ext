@@ -1,5 +1,5 @@
 @description ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions
-@version 0.4.0
+@version 0.5.0
 @author Matthias Kronlachner
 @metapackage
 @provides
@@ -14,8 +14,9 @@
 
   REAPER extension adding read and write support for `.ambix` files following
   the ambiX (Ambisonics eXchangeable) specification. Output can be written
-  uncompressed (CAF container) or with WavPack lossless compression; reading
-  auto-detects the container.
+  uncompressed (CAF container), with WavPack lossless compression, or with
+  WavPack hybrid (lossy) compression at a chosen bit rate; reading auto-detects
+  the container.
 
   It also adds five actions to the main action list:
 
@@ -42,8 +43,8 @@
   **ambiX: Convert selected item(s) to .ambix file(s)...**
 
   Writes each selected item out as an .ambix file next to its source media,
-  item by item rather than through the render dialog. Optional WavPack lossless
-  compression.
+  item by item rather than through the render dialog. Container and compression
+  are picked from a dropdown, lossless or lossy.
 
   **ambiX: Convert selected item(s) from FuMa to ambiX...**
 
@@ -53,13 +54,18 @@
 
   Restart REAPER after installing or updating.
 @changelog
-  - New action: measure the loudness of the selected items and report it,
-    changing nothing - the ambisonic-aware counterpart to REAPER's own item
-    loudness analysis
-  - New action: convert the selected items to .ambix files, item by item
-    instead of through the render dialog
-  - New action: convert Furse-Malham (B-format) items to the ambiX convention
-    (ACN/SN3D), up to third order including the reduced FuMa sets. Implemented
-    from the ambiX paper rather than libambix's AMBIX_MATRIX_FUMA, which routes
-    first-order X into the ambiX Z slot and adds Condon-Shortley signs the
-    paper rejects
+  - WavPack hybrid (lossy) compression, in the render dialog and in both
+    convert actions: a chosen bit rate per sample and channel, with the noise
+    floor tracking each channel's own level so quiet higher-order channels
+    stay quiet
+  - Both convert actions now use proper dialogs - compression as a dropdown
+    with the same presets the render dialog offers, and real checkboxes -
+    instead of typed y/n answers and a bits-per-sample number
+  - Much faster: libambix now asks WavPack for worker threads on both the
+    encode and decode paths, which it never did before. Measured on 36
+    channels, encoding went from 10.5x to 28.4x realtime and decoding from
+    13.5x to 46.8x, with byte-identical output. Renders and conversions both
+    benefit
+  - Fixed: the progress dialog is shared by every long-running action but its
+    title was fixed to "Normalize item loudness", so conversions and the
+    measure action ran under the wrong caption
