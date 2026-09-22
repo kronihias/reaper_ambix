@@ -98,7 +98,7 @@ it after a normalize reads back the target you asked for.
 ### ambiX: Set channel count of selected track(s) and their sends...
 
 Sets the track channel count on every selected track and resizes the sends that
-carried those tracks' full width, so a whole encoder-into-bus chain changes
+run from those tracks' channel 1, so a whole encoder-into-bus chain changes
 ambisonic order in one step. Working at first order and switching to fifth just
 before rendering saves a lot of CPU; doing it by hand across a large session is
 tedious and easy to get wrong.
@@ -110,11 +110,14 @@ rounded up to the next even number. Up to 128 channels (REAPER 7; older
 versions clamp to 64). The count is remembered between sessions and the whole
 run is a single undo point.
 
-A send is resized only if it carried its source track's entire width from
-channel 1 into the destination's channel 1. Mono sends, sends starting at a
-channel offset, and sends that only ever carried part of the track — a stereo
-monitor tap, a 10-channel bed feed off a 128-channel track — keep the width
-they have. Hardware outputs are never touched.
+A send is resized if it runs from its source track's channel 1 into the
+destination's channel 1 and is stereo or wider, whatever width it has now — so
+a stereo send on a track that is already at the target count is widened too.
+Mono sends and sends starting at a channel offset are left at the width they
+have, which is also how you keep a deliberate partial routing out of the
+action's way: a 10-channel bed feed off channel 1 is resized along with
+everything else, one off channels 11-20 is not. Hardware outputs are never
+touched.
 
 Only sends *out of* selected tracks are resized. A receive from a track you did
 not select comes from a track whose width is not changing, so touching it would

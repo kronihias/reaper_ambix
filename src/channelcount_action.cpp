@@ -3,7 +3,7 @@
  *  and their sends..." action.
  *
  *  Sets the track channel count on every selected track and resizes the sends
- *  that carried those tracks' full width to match, so an ambisonic bus and the
+ *  that run from those tracks' channel 1 to match, so an ambisonic bus and the
  *  encoders feeding it change order in one step. Working at first order and
  *  switching to fifth just before rendering saves a lot of CPU, and doing it
  *  by hand across a large session is tedious and easy to get wrong.
@@ -105,22 +105,27 @@ static int MakeSendSrcChan(int nch)
   return (nch == 2 ? 0 : nch / 2) << 10;
 }
 
-/* Which sends are ours to touch? Only the ones that carried the source track's
- * entire width, from its first channel into the destination's first channel —
- * the encoder-into-ambisonic-bus shape this action exists for. Everything else
- * is a deliberate partial routing that has nothing to do with the track's
- * width: a mono send, a stereo monitor tap off channels 5/6, or the 10-channel
- * bed feed off a 128-channel track. Those keep exactly the width they have.
+/* Which sends are ours to touch? The ones aligned at the front on both ends —
+ * from the source track's channel 1 into the destination's channel 1, in
+ * stereo or wider — which is the encoder-into-ambisonic-bus shape this action
+ * exists for. A mono send and a send starting at a channel offset (a stereo
+ * monitor tap off channels 5/6) are deliberate partial routings that have
+ * nothing to do with the track's width, and keep exactly the width they have.
  *
- * `trackChannels` is the source track's channel count BEFORE this action ran,
- * which is why the caller snapshots it first. */
-static bool CarriedWholeTrack(int srcchan, int dstchan, int trackChannels)
+ * Note that the send's CURRENT width is deliberately not part of the test. It
+ * used to have to match the track's width before the action ran, which meant a
+ * send narrower than its source track was never widened — so running the
+ * action on a track that was already at the target count resized nothing at
+ * all, and a track going 4 -> 36 left a stereo send on channel 1 behind. The
+ * cost is that a partial routing off channel 1 — a 10-channel bed feed out of
+ * a 128-channel track — is widened along with everything else; start it at a
+ * channel offset to keep it out of this action's way. */
+static bool SendFollowsTrackWidth(int srcchan, int dstchan)
 {
   if (srcchan < 0) return false;                   /* MIDI-only send */
   if (SendFirstChannel(srcchan) != 0) return false;
   if (SendWidthField(srcchan) == 1) return false;  /* mono */
-  if (dstchan != 0) return false;
-  return SendNumChannels(srcchan) == trackChannels;
+  return dstchan == 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -235,9 +240,10 @@ static void SetSelectedTrackChannelCounts(void)
     ShowConsoleMsg(line);
   }
 
-  /* The send pass has to know how wide each track was before we touched it, so
-   * snapshot that first. Anything above 64 tracks spills onto the heap through
-   * the vector rather than sitting on the stack. */
+  /* Snapshot the tracks and their current widths first: pass 1 overwrites
+   * I_NCHAN, and the console line reports what each track came from. Anything
+   * above 64 tracks spills onto the heap through the vector rather than
+   * sitting on the stack. */
   std::vector<MediaTrack *> tracks((size_t)numSelected, (MediaTrack *)NULL);
   std::vector<int> oldChannels((size_t)numSelected, 0);
 
@@ -286,7 +292,7 @@ static void SetSelectedTrackChannelCounts(void)
       const int srcchan = (int)GetTrackSendInfo_Value(tr, 0, s, "I_SRCCHAN");
       const int dstchan = (int)GetTrackSendInfo_Value(tr, 0, s, "I_DSTCHAN");
 
-      if (!CarriedWholeTrack(srcchan, dstchan, oldChannels[(size_t)i]))
+      if (!SendFollowsTrackWidth(srcchan, dstchan))
       {
         if (srcchan >= 0) ++kept;
         continue;
