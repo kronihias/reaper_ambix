@@ -65,9 +65,13 @@ Channel handling follows BS.1770-5 Annex 3:
 | 9.1.4 (14 ch, Dolby/SMPTE order) | as above, plus Lss/Rss at G = 1.41 |
 | Mono / stereo | G = 1.00 per channel |
 
-Measuring only W for ambisonic material is both correct — per Peters & Epain
-(AES 154th, 2023) applying BS.1770 to W matches a full loudspeaker rendering —
-and much cheaper, since the other HOA channels never have to be read.
+Measuring only W for ambisonic material is as accurate as measuring a full
+loudspeaker rendering [2], and much cheaper, since the other HOA channels never
+have to be read.
+
+[2] N. Peters, N. Epain. *Loudness Perception of Scene-Based Audio across
+Loudspeaker Configurations and HOA Orders.* AES Convention Paper 10658, 154th
+AES Convention, Espoo, Helsinki, Finland, May 13–15, 2023.
 
 Only channels that carry weight are read at all. A fifth-order bed is 36
 channels but costs one; an LFE is requested but never filtered; and a source
