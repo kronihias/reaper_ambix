@@ -1,5 +1,5 @@
 @description REAPER Live - touch mixer and transport web interface
-@version 0.4.0
+@version 0.5.0
 @author Matthias Kronlachner
 @provides
   reaper_mixer_live.html
@@ -23,6 +23,9 @@
     to where you touched. Double-tap resets a fader to 0 dB
   - Transport bar with go-to-start, stop, pause, play, record and repeat, plus
     the play position and time signature
+  - Collapsible **markers panel** on the right: every marker and region with
+    its time, the current ones highlighted; tap one to jump there (follows
+    the transport lock)
   - Shows a banner and dims the mixer when REAPER stops answering, so a dead
     connection is obvious instead of looking like a frozen desk
 
@@ -39,8 +42,6 @@
 
   Both devices need to be on the same network, and REAPER has to be running.
 @changelog
-  - Add a global fader lock (unlocked by default) and a per-track fader lock
-    in each strip header; the global lock wins over the per-track ones
-  - Group the three padlocks together in the transport bar, and wrap the bar
-    on phone-width screens so the transport buttons can no longer be pushed
-    off the edge
+  - Add a collapsible markers panel (Markers button in the transport bar):
+    lists every marker and region, highlights the current ones, and jumps
+    there on tap while the transport is unlocked

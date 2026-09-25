@@ -50,9 +50,15 @@
   }
 
   /* ===== Mixer area ===== */
-  #mixer {
+  #main {
     flex: 1;
     min-height: 0;
+    display: flex;
+    position: relative;
+  }
+  #mixer {
+    flex: 1;
+    min-width: 0;
     display: flex;
     gap: 6px;
     padding: 10px 10px 6px 10px;
@@ -303,6 +309,70 @@
     pointer-events: none;
   }
 
+  /* ===== Markers panel ===== */
+  /* Collapses to zero width rather than display:none so opening it slides. */
+  #markers {
+    flex: 0 0 auto;
+    width: 0;
+    overflow: hidden;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    transition: width 150ms;
+  }
+  body.markers-open #markers { width: 260px; }
+  #markers-head {
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  #markers-hint { font-weight: 400; letter-spacing: 0; }
+  body.transport-unlocked #markers-hint { display: none; }
+  #marker-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 6px;
+    min-width: 260px;
+  }
+  .marker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: var(--panel-2);
+    color: var(--text);
+    border: none;
+    border-left: 4px solid var(--muted);
+    border-radius: 6px;
+    padding: 10px 10px;
+    margin-bottom: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .marker:active { background: #1a1d22; }
+  .marker.current { box-shadow: inset 0 0 0 1px var(--accent); }
+  /* Regions get a full-height tinted bar so they read as a span, not a point. */
+  .marker.region { background: #252a31; border-left-width: 8px; }
+  .marker-id { color: var(--muted); font-size: 11px; font-weight: 700; flex: 0 0 auto; }
+  .marker-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .marker-time { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+  #marker-empty { color: var(--muted); font-size: 12px; padding: 10px 6px; }
+  /* Jumping moves the playhead, so it follows the transport lock. The list is
+     only dimmed, not pointer-events:none, so it can still be scrolled. */
+  body:not(.transport-unlocked) .marker { opacity: 0.45; cursor: default; }
+
+  .tbtn.markers-toggle { width: auto; padding: 0 10px; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
+  body.markers-open .tbtn.markers-toggle { background: var(--accent-dim); color: #fff; }
+
   /* ===== Connection state ===== */
   /* REAPER's polling framework has no error callback, so "connected" is
      inferred from replies still arriving. */
@@ -399,6 +469,17 @@
     #status-pill { display: none; }
     .tbtn { width: 44px; height: 40px; }
     .tbtn.lock { width: auto; padding: 0 8px; font-size: 11px; }
+    .tbtn.markers-toggle { width: 44px; padding: 0; }
+    .tbtn.markers-toggle span { display: none; }
+    /* No room to push the mixer aside on a phone: overlay it instead. */
+    #markers {
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      z-index: 5;
+      box-shadow: -8px 0 16px rgba(0,0,0,0.4);
+    }
+    body.markers-open #markers { width: min(80vw, 280px); }
+    #marker-list { min-width: min(80vw, 280px); }
   }
 </style>
 </head>
@@ -407,7 +488,13 @@
 <div id="offline">NO CONNECTION TO REAPER</div>
 
 <div id="app">
-  <div id="mixer"></div>
+  <div id="main">
+    <div id="mixer"></div>
+    <div id="markers">
+      <div id="markers-head">MARKERS &amp; REGIONS <span id="markers-hint">· unlock transport to jump</span></div>
+      <div id="marker-list"><div id="marker-empty">No markers or regions</div></div>
+    </div>
+  </div>
 
   <div id="transport">
     <div class="time" id="timeDisplay">1.1.00</div>
@@ -435,6 +522,10 @@
         <path class="lock-open" d="M7 10V7a5 5 0 0 1 9.6-2h-2.2A3 3 0 0 0 9 7v3z"/>
         <rect x="5" y="10" width="14" height="11" rx="2"/>
       </svg>
+    </button>
+    <button class="tbtn markers-toggle" id="btnMarkers" title="Show/hide markers and regions"
+            aria-label="Show or hide the marker and region list"><span>Markers</span>
+      <svg viewBox="0 0 24 24"><path d="M6 3h2v18H6zM9 4h10l-3 4 3 4H9z"/></svg>
     </button>
     <div class="spacer"></div>
 
@@ -497,6 +588,13 @@ function posToVol(p) {
 function volToDb(v) {
   if (v < 0.00000002980232) return "-inf";
   return (Math.log(v) * 8.68588963806).toFixed(1);
+}
+
+// REAPER sends colours as a native int; bit 0x1000000 marks a custom colour,
+// the lower 24 bits are RGB.
+function reaperColor(c, fallback) {
+  if (!c || !(c & 0xffffff)) return fallback;
+  return "rgb(" + (c & 0xff) + "," + ((c >> 8) & 0xff) + "," + ((c >> 16) & 0xff) + ")";
 }
 
 /* ===== UI construction ===== */
@@ -745,6 +843,12 @@ function wwr_onreply(results) {
       case "BEATPOS":   handleBeatPos(tok); break;
       case "NTRACK":    handleNTrack(tok); break;
       case "TRACK":     handleTrack(tok); break;
+      case "MARKER_LIST":     markerRows = []; break;
+      case "MARKER":          markerRows.push(tok); break;
+      case "MARKER_LIST_END": renderMarkers(); break;
+      case "REGION_LIST":     regionRows = []; break;
+      case "REGION":          regionRows.push(tok); break;
+      case "REGION_LIST_END": renderMarkers(); break;
     }
   }
 }
@@ -774,14 +878,7 @@ function handleTrack(tok) {
 
   var s = stripEls[id];
 
-  // Track color accent — REAPER sends a native int; bit 0x1000000 marks a custom color, lower 24 bits are RGB.
-  var newColor = "transparent";
-  if (colorInt && (colorInt & 0xffffff)) {
-    var r = colorInt & 0xff;
-    var g = (colorInt >> 8) & 0xff;
-    var b = (colorInt >> 16) & 0xff;
-    newColor = "rgb(" + r + "," + g + "," + b + ")";
-  }
+  var newColor = reaperColor(colorInt, "transparent");
   if (s._color !== newColor) {
     s.color.style.background = newColor;
     s._color = newColor;
@@ -813,6 +910,8 @@ function handleTransport(tok) {
   var state = parseInt(tok[1], 10);
   var repeat = parseInt(tok[3], 10);
   var posStr = tok[4];
+  playPos = parseFloat(tok[2]) || 0;
+  highlightMarker();
 
   var timeEl = document.getElementById("timeDisplay");
   if (posStr !== lastTimeStr) {
@@ -924,6 +1023,105 @@ function toggleFaderLock(id) {
 
 loadFaderLocks();
 Object.keys(stripEls).forEach(function(id) { applyFaderLock(id); });
+
+
+/* ===== Markers and regions =====
+   One list, sorted by position. Polled only while the panel is open. Clicking
+   an entry seeks with SET/POS (a region to its start), which moves the
+   playhead mid-playback, so it obeys the transport lock. */
+var markerRows = [];
+var regionRows = [];
+var markers = [];          // [{id, name, pos, end, el}]; end is null for a marker
+var markersKey = "";
+var playPos = 0;
+var MARKERS_OPEN_KEY = "reaperLive.markersOpen";
+
+function fmtTime(sec) {
+  var h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  var ss = (s < 10 ? "0" : "") + s.toFixed(1);
+  return h ? h + ":" + (m < 10 ? "0" : "") + m + ":" + ss : m + ":" + ss;
+}
+
+function renderMarkers() {
+  // Rebuild only when something changed; the list arrives every poll.
+  var key = markerRows.concat(regionRows)
+    .map(function(t) { return t.join("\t"); }).join("\n");
+  if (key === markersKey) return;
+  markersKey = key;
+
+  var list = document.getElementById("marker-list");
+  list.innerHTML = "";
+  // MARKER \t name \t id \t pos \t color
+  // REGION \t name \t id \t start \t end \t color
+  markers = markerRows.map(function(t) {
+    return { id: t[2], name: simple_unescape(t[1] || ""), pos: parseFloat(t[3]) || 0,
+             end: null, color: parseInt(t[4], 10) || 0 };
+  }).concat(regionRows.map(function(t) {
+    return { id: t[2], name: simple_unescape(t[1] || ""), pos: parseFloat(t[3]) || 0,
+             end: parseFloat(t[4]) || 0, color: parseInt(t[5], 10) || 0 };
+  })).sort(function(a, b) { return a.pos - b.pos; });
+
+  if (!markers.length) {
+    list.innerHTML = '<div id="marker-empty">No markers or regions</div>';
+    return;
+  }
+  markers.forEach(function(mk) {
+    var isRegion = mk.end !== null;
+    var el = document.createElement("button");
+    el.className = "marker" + (isRegion ? " region" : "");
+    el.style.borderLeftColor = reaperColor(mk.color, "var(--muted)");
+    var id = document.createElement("span");
+    id.className = "marker-id";
+    id.textContent = (isRegion ? "R" : "M") + mk.id;
+    var name = document.createElement("span");
+    name.className = "marker-name";
+    name.textContent = mk.name || (isRegion ? "Region " : "Marker ") + mk.id;
+    var time = document.createElement("span");
+    time.className = "marker-time";
+    time.textContent = isRegion ? fmtTime(mk.pos) + "–" + fmtTime(mk.end)
+                                : fmtTime(mk.pos);
+    el.appendChild(id);
+    el.appendChild(name);
+    el.appendChild(time);
+    el.addEventListener("click", function() {
+      if (!document.body.classList.contains("transport-unlocked")) return;
+      wwr_req("SET/POS/" + mk.pos);
+    });
+    mk.el = el;
+    list.appendChild(el);
+  });
+  highlightMarker();
+}
+
+// Current: the last marker at or before the playhead, and every region the
+// playhead is inside.
+function highlightMarker() {
+  var cur = null, p = playPos + 0.001;
+  for (var i = 0; i < markers.length && markers[i].pos <= p; i++)
+    if (markers[i].end === null) cur = markers[i];
+  for (var j = 0; j < markers.length; j++) {
+    var mk = markers[j];
+    var on = mk.end === null ? mk === cur : (mk.pos <= p && p < mk.end);
+    if (mk.el.classList.contains("current") !== on)
+      mk.el.classList.toggle("current", on);
+  }
+}
+
+function setMarkersOpen(open) {
+  document.body.classList.toggle("markers-open", open);
+  wwr_req_recur_cancel("MARKER;REGION");
+  if (open) { wwr_req("MARKER;REGION"); wwr_req_recur("MARKER;REGION", 1000); }
+  try { localStorage.setItem(MARKERS_OPEN_KEY, open ? "1" : "0"); } catch (e) {}
+}
+
+(function() {
+  var open = false;
+  try { open = localStorage.getItem(MARKERS_OPEN_KEY) === "1"; } catch (e) {}
+  setMarkersOpen(open);
+})();
+document.getElementById("btnMarkers").addEventListener("click", function() {
+  setMarkersOpen(!document.body.classList.contains("markers-open"));
+});
 
 
 /* ===== Transport buttons ===== */
