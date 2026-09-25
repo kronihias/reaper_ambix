@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="reaper_ambix" commit="df1e239f6266d3123def2b266b93c80c6ae38548">
+<index version="1" name="reaper_ambix" commit="022277fce51d2261022fcb064ad2f5a4b47d92be">
   <category name="Extensions">
     <reapack name="reaper_ambix.ext" type="extension" desc="ambiX (.ambix) file support for REAPER, plus loudness, channel-count and conversion actions">
       <metadata>
@@ -17,9 +17,9 @@
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Set channel count of selected track(s) and their sends...}\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Sets the track channel count on every selected track and resizes the sends that carried those tracks' full width, so a whole encoder-into-bus chain changes ambisonic order in one step. Partial routings (mono sends, offset taps, hardware outputs) are left alone.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Convert selected item(s) to .ambix file(s)...}\par}
-{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Writes each selected item out as an .ambix file next to its source media, item by item rather than through the render dialog. Container and compression are picked from a dropdown, lossless or lossy.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Writes each selected item out as an .ambix file next to its source media, item by item rather than through the render dialog. Container and compression are picked from a dropdown, lossless or lossy. The project can be left alone, or each item can gain the result as an extra take, or be pointed straight at it. A take's playback rate is not baked in: the file holds the source material unstretched and the item keeps the rate, so the conversion can be undone.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 {\b ambiX: Convert selected item(s) from FuMa to ambiX...}\par}
-{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Converts Furse-Malham (classic B-format) material to ACN/SN3D, per section 4.2.1 of the ambiX paper, up to third order including the reduced FuMa sets. The result can be added to the item as an extra take.\par}
+{\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Converts Furse-Malham (classic B-format) material to ACN/SN3D, per section 4.2.1 of the ambiX paper, up to third order including the reduced FuMa sets. The result can be added to the item as an extra take, or replace it.\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 Restart REAPER after installing or updating.\par}
 }
 ]]></description>
@@ -107,6 +107,7 @@
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} {\b Per-track fader locks.} Each strip header has its own padlock, for pinning the channels that must not move - a playback stem, a safety mic - while the rest stay live. The global fader lock overrides them\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Faders drag {\b relatively}, so putting a finger down never jumps the level to where you touched. Double-tap resets a fader to 0 dB\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Transport bar with go-to-start, stop, pause, play, record and repeat, plus the play position and time signature\par}
+{\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Collapsible {\b markers panel} on the right: every marker and region with its time, the current ones highlighted; tap one to jump there (follows the transport lock)\par}
 {\pard \ql \f0 \fs24 \sa0 \li360 \fi-360\ls1\ilvl0\tx360 {\listtext\tab \bullet \tab} Shows a banner and dims the mixer when REAPER stops answering, so a dead connection is obvious instead of looking like a frozen desk\sa180\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 \outlinelevel1 \b \fs32 Setting it up\par}
 {\pard \ql \f0 \fs24 \sa180 \li0 \fi0 ReaPack installs the page into {\f1 \fs24 reaper_www_root/}, but REAPER still has to be told to serve it:\par}
@@ -143,6 +144,12 @@
   on phone-width screens so the transport buttons can no longer be pushed
   off the edge]]></changelog>
         <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/f777ca513f9379d35f2cb80527bfbee73d3e979d/WebInterfaces/reaper_mixer_live.html</source>
+      </version>
+      <version name="0.5.0" author="Matthias Kronlachner" time="2026-09-25T06:39:39Z">
+        <changelog><![CDATA[- Add a collapsible markers panel (Markers button in the transport bar):
+  lists every marker and region, highlights the current ones, and jumps
+  there on tap while the transport is unlocked]]></changelog>
+        <source file="reaper_mixer_live.html">https://github.com/kronihias/reaper_ambix/raw/022277fce51d2261022fcb064ad2f5a4b47d92be/WebInterfaces/reaper_mixer_live.html</source>
       </version>
     </reapack>
   </category>
