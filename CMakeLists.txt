@@ -108,6 +108,21 @@ if(REAPER_AMBIX_BUILD_TESTS)
     endif()
 
     add_test(NAME fuma COMMAND test_fuma)
+
+    # Adaptor matrices (src/adaptermatrices/): header-only data. The test
+    # mirrors libambix's pinv formula instead of linking it.
+    add_executable(test_adapter_matrices
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_adapter_matrices.cpp)
+    target_include_directories(test_adapter_matrices PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set_target_properties(test_adapter_matrices PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
+    if(NOT MSVC)
+        target_compile_options(test_adapter_matrices PRIVATE -fsigned-char)
+    else()
+        target_compile_definitions(test_adapter_matrices PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_test(NAME adapter_matrices COMMAND test_adapter_matrices)
 endif()
 
 ################################################
