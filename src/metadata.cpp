@@ -400,12 +400,12 @@ void SpaceLevelSummary(const JValue &root, std::string &out)
     if (Num(orient, "frontOffset", v)) o += "front offset " + Format("%.1f", v) + kDeg;
     const JValue *level = orient->Get("levelWithGravity");
     if (level && level->type == JValue::Bool)
-      o += (o.empty() ? "" : ", ") + std::string("levelled with gravity: ") + (level->b ? "yes" : "no");
+      o += (o.empty() ? "" : ", ") + std::string(level->b ? "views levelled with the tilt (telemetry)" : "views not levelled");
     if (!o.empty()) Line(out, "Orientation", o);
     if ((s = Str(orient, "frame")))
     {
       if (*s == "mic")
-        Line(out, "Frame", "mic (audio is in the microphone's own frame, not levelled)");
+        Line(out, "Audio frame", "mic (the audio itself is neither levelled nor turned)");
       else
         Line(out, "Frame", OneLine(*s, 64));
     }

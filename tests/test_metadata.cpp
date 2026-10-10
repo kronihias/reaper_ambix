@@ -61,7 +61,7 @@ static void TestFull()
   CheckHas(t, "source spcmic, device iPad Pro, app SpaceLevelMeter 1.0 (12)", w);
   CheckHas(t, "  Input: spcmic (16 ch, 48000 Hz)\r\n", w);
   CheckHas(t, "full scale = 130.0 dB SPL", w);
-  CheckHas(t, "front offset -90.0\xC2\xB0, levelled with gravity: no", w);
+  CheckHas(t, "front offset -90.0\xC2\xB0, views not levelled", w);
   CheckHas(t, "not levelled", w);
   CheckHas(t, "123.4\xC2\xB0 true, 120.0\xC2\xB0 magnetic (\xC2\xB1" "5\xC2\xB0)", w);
   CheckHas(t, "pitch 1.0\xC2\xB0, roll 0.0\xC2\xB0", w);
