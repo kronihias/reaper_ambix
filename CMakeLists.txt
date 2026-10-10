@@ -123,6 +123,22 @@ if(REAPER_AMBIX_BUILD_TESTS)
     endif()
 
     add_test(NAME adapter_matrices COMMAND test_adapter_matrices)
+
+    # Tag summary for the source properties (src/metadata.cpp): pure C++, the
+    # WavPack tag reading itself stays in wrapperclass.cpp.
+    add_executable(test_metadata
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_metadata.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/metadata.cpp)
+    target_include_directories(test_metadata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set_target_properties(test_metadata PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
+    if(NOT MSVC)
+        target_compile_options(test_metadata PRIVATE -fsigned-char)
+    else()
+        target_compile_definitions(test_metadata PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_test(NAME metadata COMMAND test_metadata)
 endif()
 
 ################################################
@@ -162,6 +178,7 @@ add_subdirectory(libambix)
 
 set (reaper_ambix_sources
 	${CMAKE_CURRENT_SOURCE_DIR}/src/wrapperclass.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/src/metadata.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsrc_ambix.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/pcmsink_ambix.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/src/loudness.cpp

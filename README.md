@@ -32,7 +32,9 @@ Adds `.ambix` as a render format and a readable media type. Files are written
 as uncompressed CAF, WavPack lossless, or WavPack lossy (hybrid mode at 6, 4 or
 3 bits/sample — the noise floor follows each channel's level, so it survives
 decoding and rotation; keep a lossless master). The item's source properties
-show which one a file is.
+show which one a file is, plus the tags of WavPack files (for SpaceLevelMeter
+recordings: date, place, calibration, orientation, telemetry and markers).
+Markers and regions stored in a file show up as cues.
 
 <table><tr>
   <td width="57%">
@@ -97,7 +99,8 @@ ReaPack builds — delete it before testing those. Installer builds:
 
 Loudness ([tests/test_loudness.cpp](tests/test_loudness.cpp), EBU Tech 3341)
 and FuMa conversion ([tests/test_fuma.cpp](tests/test_fuma.cpp) — libambix's
-`AMBIX_MATRIX_FUMA` is wrong, so it is not used). No submodules needed:
+`AMBIX_MATRIX_FUMA` is wrong, so it is not used), and the tag summary in the
+source properties ([tests/test_metadata.cpp](tests/test_metadata.cpp)). No submodules needed:
 
 ```
 cmake -S . -B build-tests -DREAPER_AMBIX_BUILD_TESTS=ON -DREAPER_AMBIX_BUILD_PLUGIN=OFF

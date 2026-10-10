@@ -1,6 +1,10 @@
 #include "wrapperclass.h"
+#include "metadata.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
+#include <wavpack.h>
 
 /* libambix is statically linked; ambix_* symbols come from <ambix/ambix.h>. */
 
@@ -229,6 +233,36 @@ void LSFW_SimpleMediaDecoder::Close(bool fullClose)
   m_fh=0;
 }
 
+/* The APEv2 text items of a WavPack file (WavPack keeps them out of the
+ * libambix handle, so the file is opened once more, for its tags only). */
+static std::vector<AmbixTagItem> ReadWavPackTags(const char *filename)
+{
+  std::vector<AmbixTagItem> items;
+  char err[80] = {0};
+  WavpackContext *wpc = filename ? WavpackOpenFileInput(filename, err, OPEN_TAGS | OPEN_FILE_UTF8, 0) : NULL;
+  if (!wpc)
+    return items;
+  const int count = WavpackGetNumTagItems(wpc);
+  for (int i = 0; i < count; ++i)
+  {
+    const int namelen = WavpackGetTagItemIndexed(wpc, i, NULL, 0);
+    if (namelen <= 0) continue;
+    std::vector<char> name(namelen + 1, 0);
+    WavpackGetTagItemIndexed(wpc, i, &name[0], namelen + 1);
+    const int valuelen = WavpackGetTagItem(wpc, &name[0], NULL, 0);
+    std::string value;
+    if (valuelen > 0)
+    {
+      std::vector<char> v(valuelen + 1, 0);
+      WavpackGetTagItem(wpc, &name[0], &v[0], valuelen + 1);
+      value.assign(&v[0], valuelen); // may hold NUL-separated values
+    }
+    items.push_back(AmbixTagItem(std::string(&name[0]), value));
+  }
+  WavpackCloseFile(wpc);
+  return items;
+}
+
 void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, int titlelen)
 {
   strncpy(title,"ambix File Properties",titlelen);
@@ -294,13 +328,35 @@ void LSFW_SimpleMediaDecoder::GetInfoString(char *buf, int buflen, char *title, 
             "Ambisonic Channels Stored: %d\r\n"
             "Ambisonic Channels Retrieved: %d\r\n"
             "Adapter Matrix embedded: %s\r\n"
-            "Extra Channels: %d\r\n"
-
-            "\nreaper_ambix read support by Matthias Kronlachner\nwww.matthiaskronlachner.com\n"
-            "based on libambix by IOhannes m zmölnig\nInstitute of Electronic Music and Acoustics Graz (IEM)\nwww.iem.at",
+            "Extra Channels: %d\r\n",
             lengthbuf, m_srate, m_bps, container_str, ambix_format, m_order, m_ambi_in_channels, m_ambi_out_channels, matrix, m_xtrachannels);
-    
-    strncpy(buf,temp,buflen);
+
+    const char *credits =
+            "\r\nreaper_ambix read support by Matthias Kronlachner\r\nwww.matthiaskronlachner.com\r\n"
+            "based on libambix by IOhannes m zmölnig\r\nInstitute of Electronic Music and Acoustics Graz (IEM)\r\nwww.iem.at";
+
+    /* tags (title, recording details, markers...) stored by the recorder */
+    std::string meta;
+    if (ambix_get_container(m_fh) == AMBIX_CONTAINER_WAVPACK)
+      meta = AmbixFormatMetadata(ReadWavPackTags(m_filename));
+
+    /* if it does not all fit, shorten the metadata at a line end */
+    const size_t fixed = strlen(temp) + strlen(credits);
+    const size_t room = (buflen > 0 && (size_t)buflen - 1 > fixed) ? (size_t)buflen - 1 - fixed : 0;
+    if (meta.size() > room)
+    {
+      const char *more = "...\r\n";
+      size_t cut = (room > strlen(more) + 2) ? meta.rfind("\r\n", room - strlen(more) - 2) : std::string::npos;
+      meta = (cut == std::string::npos) ? std::string() : meta.substr(0, cut + 2) + more;
+      if (meta.size() > room) meta.clear();
+    }
+
+    std::string text = std::string(temp) + meta + credits;
+    if (buflen > 0)
+    {
+      strncpy(buf, text.c_str(), buflen);
+      buf[buflen - 1] = 0;
+    }
   } else
     snprintf(buf, buflen, "Error: File hasn't been opened succesfully");
   
