@@ -4,6 +4,3 @@
 [submodule "WavPack"]
 	path = WavPack
 	url = https://github.com/dbry/WavPack.git
-[submodule "libambix"]
-	path = libambix
-	url = https://github.com/kronihias/libambix.git

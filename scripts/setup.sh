@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup: clone git submodules (WDL, WavPack, libambix) and run the
+# One-time setup: clone git submodules (WDL, WavPack) and run the
 # initial CMake configure. Re-run when submodule refs change.
 
 set -euo pipefail
@@ -7,10 +7,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ -d .git ]; then
-    echo ">>> Initialising git submodules (WDL, WavPack, libambix)..."
+    echo ">>> Initialising git submodules (WDL, WavPack)..."
     git -c protocol.file.allow=always submodule update --init --recursive
 else
-    echo "note: not a git repo; skipping submodule init. Ensure WDL/, WavPack/, libambix/ are populated." >&2
+    echo "note: not a git repo; skipping submodule init. Ensure WDL/ and WavPack/ are populated." >&2
 fi
 
 # A non-Apple platform might prefer Ninja; macOS uses Unix Makefiles by

@@ -2,7 +2,7 @@
  *  test_adapter_matrices.cpp — properties of the EXTENDED-format adaptor
  *  matrices in src/adaptermatrices/ (2D circular, upper hemisphere).
  *
- *  When writing, libambix reduces the full set with R = pinv(A) (computed as
+ *  When writing, the sink reduces the full set with R = pinv(A) (computed as
  *  (A^T A)^-1 A^T in float32), and a reader expands with A. For this to be
  *  lossless on repeated application, R A must equal I. Then reduce -> expand
  *  is a projector P = A R with P P = P: the first pass discards what the
@@ -13,8 +13,9 @@
  *  block structure. scripts/generate_adapter_matrices.py --check compares
  *  the matrices with the construction they come from.
  *
- *  Needs neither REAPER nor libambix. ambix_matrix_t is re-declared with the
- *  same layout as in <ambix/ambix.h>, only so the headers compile.
+ *  Needs neither REAPER nor ambixfile. ambix_matrix_t (the struct the
+ *  generated headers give a matrix's size with) is declared here, only so
+ *  the headers compile.
  * ==========================================================================*/
 
 #include <cmath>
@@ -104,7 +105,7 @@ static Matrix Inverse(Matrix a)
   return inv;
 }
 
-/* the reduction matrix as libambix derives it: (A^T A)^-1 A^T */
+/* the reduction matrix as the pseudo-inverse gives it: (A^T A)^-1 A^T */
 static Matrix Reduction(const Matrix &a)
 {
   const Matrix at = Transpose(a);
@@ -128,7 +129,7 @@ static void CheckMatrix(const Matrix &a, int order, int wantCols, bool binary)
   /* orthonormal columns: stored with 10 decimals, so ~1e-7 */
   Check(MaxAbsDiffFromIdentity(Mul(Transpose(a), a)) < 1e-6f, "A^T A = I", order);
 
-  /* R A = I with libambix's formula in float32, and R equals A^T */
+  /* R A = I with that formula in float32, and R equals A^T */
   const Matrix r = Reduction(a);
   Check(MaxAbsDiffFromIdentity(Mul(r, a)) < 1e-5f, "pinv(A) A = I", order);
   const Matrix at = Transpose(a);

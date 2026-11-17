@@ -92,7 +92,6 @@ extern "C"
 
 REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hInstance, reaper_plugin_info_t *rec)
 {
-    // ShowConsoleMsg("Entering entrypoint function in libsndfile wrapper extension");
     
     g_hInst=hInstance;
     //g_EntrypointCallCount++;
@@ -120,8 +119,6 @@ REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE hI
 #ifdef REAPER_DEBUG_OUTPUT_TRACING
         //ShowConsoleMsg(lsfpath);
 #endif
-        /* libambix is statically linked via the vendored submodule;
-         * no runtime resolution needed. */
         rec->Register("pcmsrc",&myRegStruct);
       
         if (!rec->Register("pcmsink_ext",&mySinkRegStruct))

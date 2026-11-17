@@ -29,7 +29,7 @@ option(REAPER_AMBIX_INSTALL_USER_PLUGINS
 # it on in a dedicated job.
 option(REAPER_AMBIX_BUILD_TESTS "Build the loudness test suite" OFF)
 
-# The plugin itself needs the WDL / WavPack / libambix submodules. The loudness
+# The plugin itself needs the WDL / WavPack / ambixfile sources. The loudness
 # tests need none of them, so a test-only build can skip the whole plugin (and
 # therefore the submodule checkout) by turning this off.
 option(REAPER_AMBIX_BUILD_PLUGIN "Build the REAPER extension" ON)
@@ -43,7 +43,7 @@ endif()
 
 # Statically link the MSVC runtime so the plugin does not depend on the VC++
 # redistributable. CMP0091 (CMake >= 3.15) selects the runtime via an
-# abstraction that also propagates into the vendored WavPack/libambix builds.
+# abstraction that also propagates into the vendored WavPack/ambixfile builds.
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
@@ -51,7 +51,7 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# The static libambix/WavPack archives get linked into our shared plugin, so
+# The static ambixfile/WavPack archives get linked into our shared plugin, so
 # they must be position-independent (required on Linux/ELF, no-op elsewhere).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -93,7 +93,7 @@ if(REAPER_AMBIX_BUILD_TESTS)
     add_test(NAME loudness COMMAND test_loudness)
 
     # The FuMa conversion is pure arithmetic over a lookup table, so it needs
-    # neither REAPER nor libambix. Deliberately NOT tested against libambix's
+    # neither REAPER nor a file library. Deliberately NOT tested against libambix's
     # AMBIX_MATRIX_FUMA, which is wrong - see src/fuma.h.
     add_executable(test_fuma
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fuma.cpp
@@ -171,10 +171,26 @@ set(BUILD_SHARED_LIBS                OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING                    OFF CACHE BOOL "" FORCE)
 add_subdirectory(WavPack)
 
-# vendored libambix (with WavPack backend on)
-set(LIBAMBIX_ENABLE_WAVPACK ON  CACHE BOOL "" FORCE)
-set(LIBAMBIX_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-add_subdirectory(libambix)
+# ambixfile reads and writes the ambiX files (CAF and WavPack), linked
+# statically. It is looked for in ./ambixfile, then next to this checkout;
+# -DREAPER_AMBIX_AMBIXFILE_DIR=<path> overrides both.
+set(REAPER_AMBIX_AMBIXFILE_DIR "" CACHE PATH "ambixfile source tree")
+if(NOT REAPER_AMBIX_AMBIXFILE_DIR)
+    foreach(candidate ${CMAKE_CURRENT_SOURCE_DIR}/ambixfile
+                      ${CMAKE_CURRENT_SOURCE_DIR}/../ambixfile)
+        if(EXISTS ${candidate}/CMakeLists.txt)
+            set(REAPER_AMBIX_AMBIXFILE_DIR ${candidate})
+            break()
+        endif()
+    endforeach()
+endif()
+if(NOT EXISTS "${REAPER_AMBIX_AMBIXFILE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "ambixfile not found. Put it in ./ambixfile or pass "
+                        "-DREAPER_AMBIX_AMBIXFILE_DIR=<path to ambixfile>.")
+endif()
+set(AMBIXFILE_ENABLE_WAVPACK ON  CACHE BOOL "" FORCE)   # uses the wavpack target above
+set(AMBIXFILE_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+add_subdirectory(${REAPER_AMBIX_AMBIXFILE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/ambixfile)
 
 set (reaper_ambix_sources
 	${CMAKE_CURRENT_SOURCE_DIR}/src/wrapperclass.cpp
@@ -263,17 +279,17 @@ else()
     target_compile_definitions(reaper_ambix PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# vendored libambix (statically linked, in turn pulls in vendored WavPack)
-target_link_libraries (reaper_ambix ambix wavpack)
+# ambixfile (statically linked, in turn pulls in vendored WavPack). wavpack is
+# named as well: wrapperclass.cpp reads the WavPack tags itself. ambixfile's
+# header needs C++17.
+target_link_libraries (reaper_ambix ambixfile wavpack)
+set_target_properties(reaper_ambix PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # comctl32 provides InitCommonControls() and the msctls_progress32 class used
 # by the normalize progress dialog. (SWELL implements both itself elsewhere.)
 IF(WIN32)
 	target_link_libraries (reaper_ambix comctl32)
 ENDIF(WIN32)
-
-# Since we're linking libambix statically, define AMBIX_STATIC to avoid dllimport
-target_compile_definitions(reaper_ambix PRIVATE AMBIX_STATIC)
 
 # WDL hard-asserts at compile time that `char` is signed (wdltypes.h). GCC/Clang
 # default `char` to UNSIGNED on ARM/AArch64 (e.g. the Linux aarch64 runner),

@@ -1,14 +1,8 @@
 #ifndef WRAPPERCLASS_H
 #define WRAPPERCLASS_H
 #include "reaper_plugin.h"
-#ifdef __clang__
-# pragma clang diagnostic push
-# pragma clang diagnostic ignored "-Wignored-pragmas"
-#endif
-#include <ambix/ambix.h>
-#ifdef __clang__
-# pragma clang diagnostic pop
-#endif
+#include "ambix_io.h"
+#include <vector>
 
 class LSFW_SimpleMediaDecoder : public ISimpleMediaDecoder
 {
@@ -31,22 +25,23 @@ public:
     int ReadSamples(double *buf, int length);
     int Extended(int call, void *parm1, void *parm2, void *parm3);
     
-    void AddCueToList(int id, double time, double endtime, bool isregion, char* name, int flags);
+    void AddCueToList(int id, double time, double endtime, bool isregion, const char* name, int flags);
     
     void freeCueList();
     
 private:
-    ambix_t *m_fh;
-    ambix_info_t m_sfinfo;
+    ambixfile::Reader m_reader;
+    ambixfile::Info m_sfinfo;
     char *m_filename;
 
-    double *m_audiordbuf;
+    std::vector<double> m_ambibuf, m_xtrabuf; // only used with an adapter matrix
     int m_nch, m_bps;
     int m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels;
   
     int m_order; // 3d ambisonic order
   
-    const ambix_matrix_t* m_matrix;
+    bool m_has_matrix;                  // the file has an adapter matrix
+    unsigned m_matrix_rows, m_matrix_cols;
     double m_srate;
     INT64 m_lastpos;
     int m_lastblocklen;

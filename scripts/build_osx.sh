@@ -5,12 +5,12 @@
 #
 # Output: signed + notarized .pkg installer in _OSX_RELEASE/ that drops
 #   /Library/Application Support/REAPER/UserPlugins/reaper_ambix.dylib
-#         (statically linked: libambix + WavPack + WDL — no external deps)
+#         (statically linked: ambixfile + WavPack + WDL — no external deps)
 #
 # Pipeline (mirrors sonolink/scripts/build_osx.sh):
 #   1. cmake configure (REAPER_AMBIX_INSTALL_USER_PLUGINS=OFF) + parallel build
 #   2. recursively bundle any non-system dynamic deps (defensive — currently
-#      none are expected since libambix and WavPack are statically linked)
+#      none are expected since ambixfile and WavPack are statically linked)
 #   3. codesign the plugin (and any bundled deps) with Developer ID Application
 #      + hardened runtime
 #   4. pkgbuild the staging tree as a flat installer

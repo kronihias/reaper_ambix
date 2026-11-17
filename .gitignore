@@ -8,7 +8,6 @@
 /_LINUX_RELEASE/
 /_build_tests/
 /build-tests/
-/libambix/build-cmake/
 
 # macOS
 .DS_Store

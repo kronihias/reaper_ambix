@@ -14,7 +14,7 @@ REM  Output:
 REM    _WIN_RELEASE\reaper_ambix_vX.Y.Z_<win64|winarm64>_setup.exe -- signed installer
 REM    that drops:
 REM      %APPDATA%\REAPER\UserPlugins\reaper_ambix.dll
-REM    (statically linked: libambix + WavPack + WDL — no external deps)
+REM    (statically linked: ambixfile + WavPack + WDL — no external deps)
 REM ============================================================================
 
 setlocal EnableExtensions EnableDelayedExpansion
@@ -95,7 +95,7 @@ REM Configure + build
 REM ============================================================================
 echo.
 echo === Configuring (default Visual Studio generator, %CMAKE_ARCH%) ===
-REM No vcpkg / external toolchain needed: libambix and WavPack are vendored
+REM No vcpkg / external toolchain needed: ambixfile and WavPack are built
 REM and statically linked. (We deliberately ignore VCPKG_ROOT — VS sets it to a
 REM Program Files path whose embedded space breaks unquoted command-line
 REM expansion.)

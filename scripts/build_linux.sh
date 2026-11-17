@@ -9,11 +9,11 @@
 #
 # Output:
 #   _LINUX_RELEASE/reaper_ambix_vX.Y.Z_linux_<arch>.tar.gz
-#     |-- reaper_ambix.so       (statically linked: libambix + WavPack + WDL)
+#     |-- reaper_ambix.so       (statically linked: ambixfile + WavPack + WDL)
 #     |-- install.sh            (copies .so into ~/.config/REAPER/UserPlugins)
 #     |-- README.md
 #     |-- COPYING               (plugin, LGPL)
-#     `-- libambix-COPYING      (libambix, LGPL)
+#     `-- ambixfile-LICENSE     (ambixfile, MIT)
 
 set -e
 
@@ -59,7 +59,10 @@ mkdir -p "$STAGE"
 cp "$PLUGIN_BUILT"          "$STAGE/$PLUGIN_NAME"
 cp "$ROOT/README.md"        "$STAGE/README.md"
 cp "$ROOT/COPYING"          "$STAGE/COPYING"
-cp "$ROOT/libambix/COPYING" "$STAGE/libambix-COPYING"
+# ambixfile sits in ./ambixfile or next to this checkout (see CMakeLists.txt)
+AMBIXFILE_DIR="$ROOT/ambixfile"
+[ -f "$AMBIXFILE_DIR/LICENSE" ] || AMBIXFILE_DIR="$ROOT/../ambixfile"
+cp "$AMBIXFILE_DIR/LICENSE" "$STAGE/ambixfile-LICENSE"
 cp "$ROOT/scripts/installer/linux_install.sh" "$STAGE/install.sh"
 chmod +x "$STAGE/install.sh"
 
