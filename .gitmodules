@@ -4,3 +4,6 @@
 [submodule "WavPack"]
 	path = WavPack
 	url = https://github.com/dbry/WavPack.git
+[submodule "ambixfile"]
+	path = ambixfile
+	url = https://github.com/kronihias/ambixfile.git

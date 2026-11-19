@@ -80,10 +80,9 @@ Development
 ### Building
 
 Needs CMake 3.13+ and a C++ toolchain (Xcode CLT / VS 2022 / build-essential).
-WavPack and WDL are vendored submodules. The ambiX files are read and written
-by ambixfile, which is expected in `./ambixfile` or next to
-this checkout (`../ambixfile`); `-DREAPER_AMBIX_AMBIXFILE_DIR=<path>` points
-CMake somewhere else.
+[ambixfile](https://github.com/kronihias/ambixfile) (reads and writes the
+ambiX files), WavPack and WDL are vendored submodules.
+`-DREAPER_AMBIX_AMBIXFILE_DIR=<path>` builds against another ambixfile checkout.
 
 ```
 git clone --recursive https://github.com/kronihias/reaper_ambix
@@ -137,7 +136,7 @@ Loudspeaker Configurations and HOA Orders.* AES Convention Paper 10658, 2023.
 Credits
 -------
 
-- ambixfile (MIT) reads and writes the ambiX files. Earlier versions used
+- [ambixfile](https://github.com/kronihias/ambixfile) (MIT) reads and writes the ambiX files. Earlier versions used
   [libambix](https://git.iem.at/ambisonics/libambix) by IOhannes m zmölnig
 - [WavPack](https://github.com/dbry/wavpack) by David Bryant
 - Originally based on Xenakios' `reaper_libsndfilewrapper`

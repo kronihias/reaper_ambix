@@ -172,8 +172,8 @@ set(BUILD_TESTING                    OFF CACHE BOOL "" FORCE)
 add_subdirectory(WavPack)
 
 # ambixfile reads and writes the ambiX files (CAF and WavPack), linked
-# statically. It is looked for in ./ambixfile, then next to this checkout;
-# -DREAPER_AMBIX_AMBIXFILE_DIR=<path> overrides both.
+# statically. It is the ./ambixfile submodule; a checkout next to this one is
+# the fallback, and -DREAPER_AMBIX_AMBIXFILE_DIR=<path> overrides both.
 set(REAPER_AMBIX_AMBIXFILE_DIR "" CACHE PATH "ambixfile source tree")
 if(NOT REAPER_AMBIX_AMBIXFILE_DIR)
     foreach(candidate ${CMAKE_CURRENT_SOURCE_DIR}/ambixfile
@@ -185,7 +185,7 @@ if(NOT REAPER_AMBIX_AMBIXFILE_DIR)
     endforeach()
 endif()
 if(NOT EXISTS "${REAPER_AMBIX_AMBIXFILE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "ambixfile not found. Put it in ./ambixfile or pass "
+    message(FATAL_ERROR "ambixfile not found. Run 'git submodule update --init' or pass "
                         "-DREAPER_AMBIX_AMBIXFILE_DIR=<path to ambixfile>.")
 endif()
 set(AMBIXFILE_ENABLE_WAVPACK ON  CACHE BOOL "" FORCE)   # uses the wavpack target above
