@@ -13,27 +13,27 @@
 
 // #include "filewrite.h"
 
-#ifdef __clang__
-# pragma clang diagnostic push
-# pragma clang diagnostic ignored "-Wignored-pragmas"
-#endif
-#include <ambix/ambix.h>
-#ifdef __clang__
-# pragma clang diagnostic pop
-#endif
+#include "ambix_io.h"
+
+#include <string>
+#include <vector>
 
 #include "resource.h"
 #include "compression_presets.h"
 
-/* include adapter matrices */
+/* include adapter matrices. The generated headers describe a matrix's size
+ * with this struct (the layout libambix used); only rows and cols are read. */
+typedef struct ambix_matrix_t
+{
+  uint32_t rows;
+  uint32_t cols;
+  float **data;
+} ambix_matrix_t;
 #include "adaptermatrices/adapter_hemi.h"
 #include "adaptermatrices/adapter_circular.h"
 
 // short for AMbixSInk
 #define SINK_FOURCC REAPER_FOURCC('a','m','s','i')
-
-/* libambix is now linked statically via the vendored submodule;
- * direct calls to ambix_* are resolved at link time, no runtime dlsym shim. */
 
 extern void (*format_timestr)(double tpos, char *buf, int buflen);
 extern REAPER_PeakBuild_Interface *(*PeakBuild_Create)(PCM_source *src, const char *fn, int srate, int nch);
@@ -52,7 +52,7 @@ extern HINSTANCE g_hInst;
 
 /*
  Settings List:
- 0: Format (ambix_fileformat_t) -> 1: Basic, 2: Extended
+ 0: Format (AMBIX_CFG_FORMAT_*) -> 1: Basic, 2: Extended
  1: Order (INT)
  2: SampleFormat (INT): 0: 16bit PCM, 1: 24 bit PCM, 2: 32 bit PCM, 3: 32 bit float, 4: 64 bit float
  3: NumExtraChannels (INT)
@@ -62,11 +62,11 @@ extern HINSTANCE g_hInst;
  // AdaptorMatrix
  6: rows (uint32_t)
  7: cols (uint32_t)
- 8......8+(rows*cols): data (float32_t)
+ 8......8+(rows*cols): data (float)
  */
 typedef struct {
   int	fourCC;
-	ambix_fileformat_t format;
+	int format;
   uint32_t order;
   uint32_t sampleformat;
   uint32_t numextrachannels;
@@ -78,7 +78,7 @@ typedef struct {
   uint32_t cols;
   // ---- v2 additions (after the legacy 40-byte header). Discriminated
   //      from the legacy layout by the total cfgdata length: a legacy
-  //      payload is exactly 40 + rows*cols*sizeof(float32_t) bytes, a v2
+  //      payload is exactly 40 + rows*cols*sizeof(float) bytes, a v2
   //      payload is sizeof(AMBIXSINK_CONFIG) + matrix bytes. ----
   uint32_t version;              // 2 = WavPack-aware, 3 = adds the lossy bit rate
   uint32_t wavpack_enabled;      // 0 = uncompressed CAF, 1 = WavPack
@@ -87,7 +87,7 @@ typedef struct {
                                  //     Was a zeroed reserved word in v2, so a
                                  //     v2 payload reads back as lossless.
   uint32_t reserved;             // future-proof, zero-init
-  // float32_t *data follows at offset sizeof(AMBIXSINK_CONFIG)
+  // float *data follows at offset sizeof(AMBIXSINK_CONFIG)
 } AMBIXSINK_CONFIG;
 static const int AMBIXSINK_LEGACY_HEADER_SIZE = 40; /* sizeof pre-v2 header */
 
@@ -100,16 +100,12 @@ static void describe_container(char *buf, size_t n, bool wavpack, float bitrate)
   else                     snprintf(buf, n, "WavPack lossless");
 }
 
-void post_matrix(ambix_matrix_t *matrix)
+static void post_matrix(const ambixfile::Matrix &matrix)
 {
-  /* post matrix */
-  float32_t**data=matrix->data;
-  uint32_t r, c;
-  printf(" [%dx%d] = %p\n", matrix->rows, matrix->cols, matrix->data);
-  for(r=0; r<matrix->rows; r++) {
-    for(c=0; c<matrix->cols; c++) {
-      printf("%08f ", data[r][c]);
-    }
+  printf(" [%ux%u]\n", matrix.rows(), matrix.cols());
+  for (uint32_t r = 0; r < matrix.rows(); r++) {
+    for (uint32_t c = 0; c < matrix.cols(); c++)
+      printf("%08f ", matrix(r, c));
     printf("\n");
   }
 }
@@ -129,9 +125,15 @@ public:
     m_isopen = false;
     
     m_peakbuild=0;
-    
-    m_fh = 0;
-    
+
+    m_wanted_fileformat = AMBIX_CFG_FORMAT_BASIC;
+    m_fileformat = AMBIX_CFG_FORMAT_BASIC;
+    m_order = 0;
+    m_sampleformat = AMBIX_CFG_SAMPLEFORMAT_PCM24;
+    m_xtrachannels = 0;
+    m_doreduction = false;
+    m_ambi_in_channels = m_ambi_out_channels = m_dummychannels = 0;
+
     m_in_ch=nch;
     m_srate=srate;
     m_lensamples=0;
@@ -141,7 +143,6 @@ public:
     m_wavpack_enabled = true; // default: lossless compression on
     m_wavpack_bitrate = 0.f;  // > 0 selects WavPack hybrid (lossy) mode
 
-    m_adapter_matrix = NULL; // this one gets passed
 
     // retrieve settings
 
@@ -155,7 +156,7 @@ public:
       m_sampleformat = REAPER_MAKELEINT(pAmbixConfigData->sampleformat);
 
       if (!m_sampleformat)
-        m_sampleformat = AMBIX_SAMPLEFORMAT_PCM24; // default fallback
+        m_sampleformat = AMBIX_CFG_SAMPLEFORMAT_PCM24; // default fallback
 
       m_xtrachannels = REAPER_MAKELEINT(pAmbixConfigData->numextrachannels);
 
@@ -169,7 +170,7 @@ public:
       // Discriminate v2 (with WavPack flag) from legacy by the exact length:
       // legacy = 40 + rows*cols*4; v2 = sizeof(AMBIXSINK_CONFIG) + rows*cols*4.
       const int legacy_payload = AMBIXSINK_LEGACY_HEADER_SIZE
-                                 + (int)(rows * cols * sizeof(float32_t));
+                                 + (int)(rows * cols * sizeof(float));
       const bool is_v2 = (cfgdata_l != legacy_payload);
       int param_offset = is_v2 ? (int)sizeof(AMBIXSINK_CONFIG)
                                : AMBIXSINK_LEGACY_HEADER_SIZE;
@@ -182,84 +183,92 @@ public:
 
       if ((rows > 0) && (cols > 0))
       {
-        /* parse the matrix which got passed... */
-        m_adapter_matrix = ambix_matrix_init(rows, cols, NULL);
+        /* parse the matrix which got passed (offset depends on legacy vs v2
+         * layout). Not trusting the lengths: a short payload gives no matrix. */
+        const size_t count = (size_t)rows * cols;
+        if (cfgdata_l >= param_offset && count <= (size_t)(cfgdata_l - param_offset) / sizeof(float))
+        {
+          std::vector<float> values(count);
+          memcpy(&values[0], ((char*)cfgdata)+param_offset, count * sizeof(float));
+          m_adapter_matrix = ambixfile::Matrix(rows, cols, values);
 
-        // this is the data pointer (offset depends on legacy vs v2 layout)
-        float* mtx_data_passed = (float32_t *)(((char*)cfgdata)+param_offset);
-
-        ambix_err_t err = ambix_matrix_fill_data(m_adapter_matrix, mtx_data_passed);
-
-        if (err != AMBIX_ERR_SUCCESS)
+          printf("This matrix was passed:\n");
+          post_matrix(m_adapter_matrix);
+        }
+        else
           printf("ERROR: Could not read matrix values....\n");
-
-        printf("This matrix was passed:\n");
-        post_matrix(m_adapter_matrix);
 
       }
 
     } // end retrieve settings
 
     /* WavPack does not encode float64; quietly downcast to float32. */
-    if (m_wavpack_enabled && m_sampleformat == AMBIX_SAMPLEFORMAT_FLOAT64) {
+    if (m_wavpack_enabled && m_sampleformat == AMBIX_CFG_SAMPLEFORMAT_FLOAT64) {
       printf("WavPack: float64 not supported, falling back to float32\n");
-      m_sampleformat = AMBIX_SAMPLEFORMAT_FLOAT32;
+      m_sampleformat = AMBIX_CFG_SAMPLEFORMAT_FLOAT32;
     }
-    
+
     // number of ambisonic channels
     uint32_t L = (uint32_t)(m_order+1)*(m_order+1);
-    
-    // AMBIX_EXTENDED ... means the sink is already getting a reduced set
-    // AMBIX_BASIC ... either a full set is stored or it is reduced if set_adapter_matrix is called
-    
-    
-    
-    // if no reduction we write EXTENDED..
-    
-    if (m_doreduction && (m_wanted_fileformat == AMBIX_EXTENDED))
+
+    // BASIC: the full set of L channels is stored, no adapter matrix.
+    // EXTENDED with reduction: the sink gets the full set and stores
+    //   pinv(adapter matrix) * full set, together with the adapter matrix.
+    // EXTENDED without reduction: the sink already gets the reduced set and
+    //   stores it as it is, together with the adapter matrix.
+    if (m_wanted_fileformat == AMBIX_CFG_FORMAT_BASIC)
     {
-      m_fileformat = AMBIX_BASIC; // the library does want ambix_basic in order to do the reduction (but it will write extended....!)
+      m_adapter_matrix = ambixfile::Matrix();
+      m_doreduction = false;
     }
-    else if (m_wanted_fileformat == AMBIX_BASIC)
+    else if (m_adapter_matrix.empty())
     {
-      m_fileformat = AMBIX_BASIC;
-    }
-    else if (!m_doreduction && (m_wanted_fileformat != AMBIX_BASIC))
-    {
-      m_fileformat = AMBIX_EXTENDED;
-    }
-    
-    /* create identity adapter matrix in case of extended file format and no adapter provided */
-    if (!m_adapter_matrix && (m_wanted_fileformat == AMBIX_EXTENDED))
-    {
+      /* extended format with (N+1)^2 channels, but no adapter matrix: identity */
       printf("Init Matrix with L=%d...\n", L);
-      
-      /* generate matrix of ones in case we have extended format with (N+1)^2 channels, but we miss an adapter matrix */
-      m_adapter_matrix = ambix_matrix_init(L, L, NULL);
-      m_adapter_matrix = ambix_matrix_fill(m_adapter_matrix, AMBIX_MATRIX_IDENTITY);
+      m_adapter_matrix = ambixfile::Matrix::identity(L);
     }
-    
-    // set the number of ambisonic channels for reading/writing
-    if (m_wanted_fileformat == AMBIX_BASIC)
+
+    m_reduction_matrix = ambixfile::Matrix();
+    if (m_doreduction)
     {
-      m_ambi_in_channels = L; // (N+1)^2 for basic format
-      m_ambi_out_channels = L; // only for display...
+      /* refuse rather than write something else than what was asked for */
+      if (m_adapter_matrix.rows() != L || !m_adapter_matrix.pseudoInverse(m_reduction_matrix))
+      {
+        printf("ERROR: adapter matrix [%ux%u] can not reduce order %d\n",
+               m_adapter_matrix.rows(), m_adapter_matrix.cols(), m_order);
+        if (ShowMessageBox)
+        {
+          char msg[512];
+          snprintf(msg, sizeof(msg),
+                   "ambix render aborted: the adapter matrix (%u x %u) can not be\n"
+                   "used to reduce an ambisonic signal of order %d.\n\n"
+                   "Pick another reduction in the ambix render settings.",
+                   m_adapter_matrix.rows(), m_adapter_matrix.cols(), m_order);
+          ShowMessageBox(msg, "ambix render error", 0);
+        }
+        return;
+      }
     }
-    else if ((m_wanted_fileformat == AMBIX_EXTENDED) && m_doreduction)
+
+    // channels taken from reaper (in) and stored in the file (out)
+    if (m_wanted_fileformat == AMBIX_CFG_FORMAT_BASIC)
     {
-      m_ambi_in_channels = L; // L=(N+1)^2 for basic format and extended doing reduction
-      m_ambi_out_channels = m_adapter_matrix->cols; // only for display...
+      m_ambi_in_channels = L;
+      m_ambi_out_channels = L;
+    }
+    else if (m_doreduction)
+    {
+      m_ambi_in_channels = L;
+      m_ambi_out_channels = m_adapter_matrix.cols();
     } else {
       // we already got the reduced format to write...
-      m_ambi_in_channels = m_adapter_matrix->cols;
-      m_ambi_out_channels = m_adapter_matrix->cols; // only for display...
+      m_ambi_in_channels = m_adapter_matrix.cols();
+      m_ambi_out_channels = m_adapter_matrix.cols();
     }
-    
-    m_xtrachannels = (uint32_t)m_xtrachannels;
-    
+
     // throw away additional channels!
     m_dummychannels = m_in_ch - m_ambi_in_channels - m_xtrachannels;
-    
+
     // sanity check number of input channels
     
     if (m_ambi_in_channels + m_xtrachannels > m_in_ch)
@@ -283,65 +292,50 @@ public:
     
     
     
-    /* post matrix */
-    // post_matrix(m_adapter_matrix);
-    
     printf("Inputchannels: %d, AmbiInChannels: %d, AmbiOutChannels: %d, Extrachannels: %d, Dummychannels: %d\n", m_in_ch, m_ambi_in_channels, m_ambi_out_channels, m_xtrachannels, m_dummychannels);
-    
-    
-    if (m_fileformat == AMBIX_BASIC)
+
+    ambixfile::WriterConfig config;
+    config.sampleRate = m_srate;
+    config.sampleFormat = AmbixSampleFormatFromCfg(m_sampleformat);
+    // the channels as stored on disk
+    config.ambiChannels = m_ambi_out_channels;
+    config.extraChannels = m_xtrachannels;
+    config.adaptorMatrix = m_adapter_matrix;
+    if (m_wavpack_enabled)
     {
-      // basic format only works for (N+1)^2 channels, without extrachannels!
-      printf("Write BASIC format\n");
-    } else {
-      printf("Write EXTENDED format\n");
+      config.container = ambixfile::Container::WavPack;
+      config.wavpackHybridBits = m_wavpack_bitrate; // > 0: hybrid (lossy)
+      config.wavpackThreads = AmbixWavPackThreads();
     }
-    
-    
-    memset(&m_ainfo, 0, sizeof(m_ainfo));
-    
-    m_ainfo.fileformat=m_fileformat;
-    
-    // this value must contain the reduced numer of channels (as stored on disk)
-    m_ainfo.ambichannels=m_ambi_out_channels; // m_ambi_in_channels;
-    
-    m_ainfo.extrachannels=m_xtrachannels;
-    
-    m_ainfo.samplerate=m_srate;
-    
-    
-    // printf("Sampleformat: %d\n", m_sampleformat);
-    
-    m_ainfo.sampleformat=(ambix_sampleformat_t)m_sampleformat;
-    
+
     m_isopen = false;
 
     char container[64];
     describe_container(container, sizeof(container), m_wavpack_enabled, m_wavpack_bitrate);
 
-    ambix_filemode_t open_mode = AMBIX_WRITE;
-    if (m_wavpack_enabled) open_mode = (ambix_filemode_t)(open_mode | AMBIX_USE_WAVPACK);
-    m_fh=ambix_open(m_fn.Get(), open_mode, &m_ainfo);
-    
-    if (!m_fh) {
-      printf("Error: Can't open file!\n");
+    const ambixfile::Status status = m_writer.open(m_fn.Get(), config);
+
+    if (status != ambixfile::Status::Ok) {
+      printf("Error: Can't open file: %s\n", ambixfile::toString(status));
       if (ShowMessageBox)
       {
         char msg[1024];
         snprintf(msg, sizeof(msg),
-                 "ambix render aborted: libambix could not open the output file.\n\n"
+                 "ambix render aborted: the output file could not be created\n"
+                 "(%s).\n\n"
                  "Path: %s\n"
                  "Container: %s\n"
                  "Format: %s\n"
                  "Ambisonic channels: %u (order %u)\n"
                  "Extra channels: %u\n"
                  "Samplerate: %d Hz\n\n"
-                 "Common causes: destination folder is not writable, the path\n"
-                 "contains characters libambix cannot handle, or a file with\n"
-                 "this name is already open.",
+                 "Common causes: destination folder is not writable, a file\n"
+                 "with this name is already open, or the settings do not fit\n"
+                 "the file format.",
+                 ambixfile::toString(status),
                  m_fn.Get(),
                  container,
-                 (m_fileformat == AMBIX_BASIC) ? "BASIC" : "EXTENDED",
+                 (m_wanted_fileformat == AMBIX_CFG_FORMAT_BASIC) ? "BASIC" : "EXTENDED",
                  m_ambi_out_channels, m_order,
                  m_xtrachannels,
                  m_srate);
@@ -350,59 +344,13 @@ public:
       return;
     }
 
-    /* Lossy mode has to be requested before the first sample goes in; the
-     * encoder is configured lazily on that write. The presets in the dialog
-     * are all in range, so a refusal here means something is really wrong,
-     * and rendering lossless instead would not be what was asked for. */
-    if (m_wavpack_enabled && m_wavpack_bitrate > 0.f)
-    {
-      const ambix_err_t err = ambix_set_wavpack_bitrate(m_fh, m_wavpack_bitrate);
-      if (err != AMBIX_ERR_SUCCESS)
-      {
-        printf("Error: libambix refused WavPack bit rate %.2f (err %d)\n", m_wavpack_bitrate, (int)err);
-        if (ShowMessageBox)
-        {
-          char msg[512];
-          snprintf(msg, sizeof(msg),
-                   "ambix render aborted: libambix refused the WavPack lossy\n"
-                   "bit rate of %.2f bits per sample (error %d).\n\n"
-                   "Pick another compression setting in the format options.",
-                   m_wavpack_bitrate, (int)err);
-          ShowMessageBox(msg, "ambix render error", 0);
-        }
-        ambix_close(m_fh);
-        m_fh = 0;
-        remove(m_fn.Get());
-        return;
-      }
-    }
+    // what really gets written (a basic file can not hold extra channels)
+    m_fileformat = (m_writer.info().fileFormat == ambixfile::FileFormat::Basic)
+                     ? AMBIX_CFG_FORMAT_BASIC : AMBIX_CFG_FORMAT_EXTENDED;
+    printf("Write %s format\n", (m_fileformat == AMBIX_CFG_FORMAT_BASIC) ? "BASIC" : "EXTENDED");
+
     m_isopen = true;
-    
-    if (m_adapter_matrix) // is this save to always be called in case the matrix exists?
-    {
-      printf("setting adapter matrix...\n");
-      // set the adaptor matrix
-      ambix_err_t err = ambix_set_adaptormatrix(m_fh, m_adapter_matrix);
-      if(err!=AMBIX_ERR_SUCCESS)
-        fprintf(stderr, "setting adapator matrix [%dx%d] returned %d\n", m_adapter_matrix->rows, m_adapter_matrix->cols, err);
-        
-      // free the adaptor matrix
-      ambix_matrix_destroy(m_adapter_matrix);
-      
-      /*
-      // crosscheck the matrix
-      const ambix_matrix_t *tempmatrix = NULL;
-      
-      tempmatrix=ambix_get_adaptormatrix(m_fh);
-      
-      
-      //post matrix
-      printf("This is the stored matrix: \n");
-      post_matrix((ambix_matrix_t *)tempmatrix);
-      */
-    }
-    
-    
+
     if (buildpeaks && m_isopen)
     {
       m_peakbuild=PeakBuild_Create(NULL,fn,m_srate,m_in_ch);
@@ -420,17 +368,13 @@ public:
     
     if (IsOpen())
     {
-      
-      
-      ambix_err_t err = ambix_close(m_fh);
-      if(err!=AMBIX_ERR_SUCCESS)
-        fprintf(stderr, "Error closing file %d\n", err);
-      
+      const ambixfile::Status status = m_writer.close();
+      if (status != ambixfile::Status::Ok)
+        fprintf(stderr, "Error closing file: %s\n", ambixfile::toString(status));
 
       printf("close the file...\n");
     }
-    
-    
+
     delete m_peakbuild;
     m_peakbuild=0;
     
@@ -466,9 +410,8 @@ public:
     const char *ambix_format;
 
     switch (m_wanted_fileformat) {
-      case AMBIX_BASIC:    ambix_format = "basic";    break;
-      case AMBIX_EXTENDED: ambix_format = "extended"; break;
-      case AMBIX_NONE:
+      case AMBIX_CFG_FORMAT_BASIC:    ambix_format = "basic";    break;
+      case AMBIX_CFG_FORMAT_EXTENDED: ambix_format = "extended"; break;
       default:             ambix_format = "error";    break;
     }
 
@@ -489,52 +432,49 @@ public:
       m_peakbuild->ProcessSamples(samples,len,m_in_ch,offset,spacing);
     
     
-    /* temp buffer allocation */
-    float64_t* ambirawbuf = NULL;
-    float64_t* xtrabuf = NULL;
-    
-    ambirawbuf = (float64_t*)calloc(len*m_ambi_in_channels, sizeof(float64_t));
-    xtrabuf = (float64_t*)calloc(len*m_xtrachannels, sizeof(float64_t));
-    
-    
-    float64_t* ambirawbuf_temp = ambirawbuf;
-    float64_t* xtrabuf_temp = xtrabuf;
-    
-    int len_temp = len;
-    
+    if (!m_isopen || len <= 0)
+      return;
+
+    /* one interleaved block, as wide as the file: the ambisonics channels
+     * (reduced by the adapter matrix's pseudo-inverse if wanted), then the
+     * extra channels */
+    const uint32_t file_ch = m_ambi_out_channels + m_xtrachannels;
+    m_writebuf.resize((size_t)len * file_ch);
+
     // assume the buffer is in one row... is this save?!
-    float64_t* smpl_temp = samples[0];
-    
-    while (len_temp-- > 0) {
-      
-      for (int i=0; i < m_ambi_in_channels; i++)
+    const ReaSample* in = samples[0];
+    double* out = &m_writebuf[0];
+    const bool reduce = !m_reduction_matrix.empty();
+
+    for (int f = 0; f < len; f++)
+    {
+      if (reduce)
       {
-        *ambirawbuf_temp++ = (float64_t) (*smpl_temp++);
+        for (uint32_t r = 0; r < m_ambi_out_channels; r++)
+        {
+          double acc = 0.;
+          for (uint32_t c = 0; c < m_ambi_in_channels; c++)
+            acc += (double)m_reduction_matrix(r, c) * in[c];
+          *out++ = acc;
+        }
       }
-      
-      for (int i=0; i < m_xtrachannels; i++)
+      else
       {
-        *xtrabuf_temp++ = (float64_t) (*smpl_temp++);
+        for (uint32_t c = 0; c < m_ambi_out_channels; c++)
+          *out++ = in[c];
       }
-      
-      // this is just for incrementing the pointer... throw away those channels
-      for (int i=0; i < m_dummychannels; i++)
-      {
-        smpl_temp++;
-      }
-      
+      in += m_ambi_in_channels;
+
+      for (uint32_t c = 0; c < m_xtrachannels; c++)
+        *out++ = *in++;
+
+      // throw away the remaining channels
+      in += m_dummychannels;
     }
-    
-    /* in case we don't have to do a reduction we are done now and can write the buffers to the file */
-      
-    int sysrtn = ambix_writef_float64(m_fh,
-                                          ambirawbuf,
-                                          xtrabuf,
-                                          len);
-    
-    /* dealloc temp buffers */
-    free(ambirawbuf);free(xtrabuf);
-    
+
+    if (m_writer.write(&m_writebuf[0], len) != len)
+      fprintf(stderr, "ambix: short write (disk full?)\n");
+
     // done writing
   }
   
@@ -594,18 +534,17 @@ public:
         {
           double position = m_srate*(markerPosition-m_st);
           if (position >= 0.) {
-            ambix_marker_t new_marker;
-            memset(&new_marker, 0, sizeof(ambix_marker_t));
+            ambixfile::Marker new_marker;
             new_marker.position = position;
-            strncpy(new_marker.name, markerName, 255);
-            
-            bool startwithhash = (strncmp(new_marker.name, "#", 1) == 0) ? true : false;
+            new_marker.name = markerName ? markerName : "";
+
+            bool startwithhash = (new_marker.name.compare(0, 1, "#") == 0);
             if ( (m_writemarkers == 1) ||
                 (m_writemarkers == 3) ||
                 ((m_writemarkers == 2) && startwithhash) ||
                 ((m_writemarkers == 4) && startwithhash)
                 )
-              ambix_add_marker(m_fh, &new_marker);
+              m_writer.addMarker(new_marker);
           }
         } // end add Single Marker
         else
@@ -613,19 +552,18 @@ public:
           double start_position = m_srate*(markerPosition-m_st);
           if (start_position >= 0.)
           {
-            ambix_region_t new_region;
-            memset(&new_region, 0, sizeof(ambix_region_t));
-            new_region.start_position = start_position;
-            new_region.end_position = (double) m_srate*(markerRegionEnd-m_st);
-            strncpy(new_region.name, markerName, 255);
-            
-            bool startwithhash = (strncmp(new_region.name, "#", 1) == 0) ? true : false;
+            ambixfile::Region new_region;
+            new_region.start = start_position;
+            new_region.end = (double) m_srate*(markerRegionEnd-m_st);
+            new_region.name = markerName ? markerName : "";
+
+            bool startwithhash = (new_region.name.compare(0, 1, "#") == 0);
             if ( (m_writemarkers == 1) ||
                  (m_writemarkers == 5) ||
                  ((m_writemarkers == 2) && startwithhash) ||
                  ((m_writemarkers == 6) && startwithhash)
                )
-              ambix_add_region(m_fh, &new_region);
+              m_writer.addRegion(new_region);
           }
         } // end add Region
       }
@@ -642,12 +580,13 @@ private:
   
   bool m_isopen;
   
-  ambix_t *m_fh;
-  ambix_info_t m_ainfo;
-  ambix_fileformat_t m_wanted_fileformat;
-  ambix_fileformat_t m_fileformat;
-  
-  ambix_matrix_t* m_adapter_matrix; // this matrix gets stored in the file!
+  ambixfile::Writer m_writer;
+  int m_wanted_fileformat; // AMBIX_CFG_FORMAT_*
+  int m_fileformat;        // what the file really is
+
+  ambixfile::Matrix m_adapter_matrix;   // this matrix gets stored in the file!
+  ambixfile::Matrix m_reduction_matrix; // its pseudo-inverse, when reducing
+  std::vector<double> m_writebuf;
   
   int m_order;
   int m_sampleformat;
@@ -1009,9 +948,9 @@ static void show_review_matrix(HWND parent)
 /* depending on the ambix format enable/disable some control elements */
 static void enableDisableElements(HWND hwndDlg)
 {
-  int format = (ambix_fileformat_t)getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
+  int format = getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
   
-  if (format == AMBIX_BASIC)
+  if (format == AMBIX_CFG_FORMAT_BASIC)
   {
     /* Reset and disable Adaptor Matrix and Extra Channels */
     
@@ -1043,9 +982,9 @@ int SinkGetConfigSize(HWND hwndDlg) {
   
   getAdapterMatrix(hwndDlg, mtx_rows, mtx_cols, data);
   
-  // printf("retrieved config size: %lu, rows: %d cols: %d\n", sizeof(AMBIXSINK_CONFIG) + mtx_rows*mtx_cols*sizeof(float32_t), mtx_rows, mtx_cols);
+  // printf("retrieved config size: %lu, rows: %d cols: %d\n", sizeof(AMBIXSINK_CONFIG) + mtx_rows*mtx_cols*sizeof(float), mtx_rows, mtx_cols);
   
-  return sizeof(AMBIXSINK_CONFIG) + mtx_rows*mtx_cols*sizeof(float32_t);
+  return sizeof(AMBIXSINK_CONFIG) + mtx_rows*mtx_cols*sizeof(float);
 }
 
 
@@ -1068,7 +1007,7 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
     pAmbixConfigData->fourCC = SINK_FOURCC;
     
     
-    pAmbixConfigData->format = (ambix_fileformat_t)getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
+    pAmbixConfigData->format = getCurrentItemData(hwndDlg, IDC_AMBIX_FORMAT);
     pAmbixConfigData->order = getCurrentItemData(hwndDlg, IDC_AMBI_ORDER);
     pAmbixConfigData->sampleformat = getCurrentItemData(hwndDlg, IDC_SAMPLEFORMAT);
     pAmbixConfigData->numextrachannels = getCurrentItemData(hwndDlg, IDC_EXTRACHANNELS);
@@ -1100,9 +1039,9 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
     pAmbixConfigData->cols = mtx_cols;
     
     int param_offset = sizeof(AMBIXSINK_CONFIG);
-    float* mtx_data_dst = (float32_t *)(((char*)pConfigData)+param_offset); // write to this destination
+    float* mtx_data_dst = (float *)(((char*)pConfigData)+param_offset); // write to this destination
     
-    memcpy(mtx_data_dst, mtx_data_src, mtx_rows*mtx_cols*sizeof(float32_t));
+    memcpy(mtx_data_dst, mtx_data_src, mtx_rows*mtx_cols*sizeof(float));
     
     /*
     for (int i=0; i < mtx_rows*mtx_cols; i++)
@@ -1114,7 +1053,7 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
     */
     
     /*
-    float* mtx_data = (float32_t *)(((char*)pConfigData)+param_offset);
+    float* mtx_data = (float *)(((char*)pConfigData)+param_offset);
     
     
     for (int i=0; i < rows; i++)
@@ -1123,7 +1062,7 @@ void SinkSaveState(HWND hwndDlg, void *pSize, void *pConfigData)
       {
         float val = 0.f;
         if (i == j) {
-          val = (float32_t)i+1;
+          val = (float)i+1;
         }
         mtx_data[i*cols + j] = val;
       }
@@ -1231,7 +1170,7 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
         const int legacy_payload = AMBIXSINK_LEGACY_HEADER_SIZE
                                    + (int)(pAmbixConfigData->rows
                                            * pAmbixConfigData->cols
-                                           * sizeof(float32_t));
+                                           * sizeof(float));
         const bool is_v2 = (configLen != legacy_payload)
                             && (pAmbixConfigData->version >= 2);
         int compression = -1;
@@ -1256,55 +1195,6 @@ WDL_DLGRET wavecfgDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
       // this gets called in case something changed
     case WM_COMMAND:
     {
-      
-      
-      /* ONLY FOR TESTING */
-      /* try getting hemi adapter and invert it */
-      /*
-      int order = 1;
-      
-      int mtx_rows = mtx_adapter_hemi[order-1].rows;
-      int mtx_cols = mtx_adapter_hemi[order-1].cols;
-      
-      ambix_matrix_t* mtx = ambix_matrix_init(mtx_rows, mtx_cols, NULL);
-      ambix_matrix_t* inverse = ambix_matrix_init(mtx_cols, mtx_rows, NULL);
-      
-      ambix_matrix_fill_data(mtx, adapter_hemi[order-1]);
-      
-      printf("original:\n");
-      post_matrix(mtx);
-      
-      inverse = ambix_matrix_pinv(mtx, inverse);
-      if (inverse)
-      {
-        printf("pseudo inverse:\n");
-        post_matrix(inverse);
-      }
-      */
-//      int mtx_rows = 4;
-//      int mtx_cols = 3;
-//      ambix_matrix_t* mtx = ambix_matrix_init(mtx_rows, mtx_cols, NULL);
-//      ambix_matrix_t* inverse = ambix_matrix_init(mtx_cols, mtx_rows, NULL);
-//      
-//      // ambix_matrix_fill(mtx, AMBIX_MATRIX_FUMA);
-//      // ambix_matrix_fill(mtx, AMBIX_MATRIX_IDENTITY);
-//      
-//      
-//      
-//      // float32_t data[9] = {1.f, 2.f, 4.f, 2.f, 3.f, 4.f, 3.f, 4.f, 5.f};
-//      float32_t data[12] = {0.750702260800974, 0.0, 0.0, 0.0, 1.0, 0.0, 0.660640685719784, 0.0, 0.0, 0.0, 0.0, 1.0};
-//      ambix_matrix_fill_data(mtx, data);
-//      
-//      printf("original:\n");
-//      post_matrix(mtx);
-//      
-//      inverse = ambix_matrix_pinv(mtx, inverse);
-//      if (inverse)
-//      {
-//        printf("pseudo inverse:\n");
-//        post_matrix(inverse);
-//      }
-      
       
       
       /* Ambix Format changed */
@@ -1365,7 +1255,6 @@ static PCM_sink *CreateSink(const char *filename, void *cfg, int cfg_l, int nch,
 {
   if (cfg_l >= 4 && *((int *)cfg) == SINK_FOURCC)
   {
-    /* libambix is statically linked via the vendored submodule. */
     PCM_sink_ambix *v=new PCM_sink_ambix(filename,cfg,cfg_l,nch,srate,buildpeaks);
     if (v->IsOpen()) return v;
     delete v;

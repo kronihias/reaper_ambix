@@ -55,7 +55,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; Plugin DLL goes directly into REAPER\UserPlugins. Statically linked
-; (libambix + WavPack + WDL) — no runtime deps to bundle alongside it.
+; (ambixfile + WavPack + WDL) — no runtime deps to bundle alongside it.
 Source: "{#ReaperAmbixStageDir}\reaper_ambix.dll"; \
     DestDir: "{app}"; Flags: ignoreversion
 

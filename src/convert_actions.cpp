@@ -6,7 +6,7 @@
  *
  *  Both walk the same pipeline: read each selected item through a take audio
  *  accessor, optionally run the block through a channel-conversion matrix, and
- *  write an .ambix file with libambix. The render dialog can also write .ambix
+ *  write an .ambix file with ambixfile. The render dialog can also write .ambix
  *  per item ("Selected media items"), and it is the tool to use when FX must be
  *  baked in, since it runs the take FX chain. These two are for material that
  *  is already ambiX: a pre-FX copy per item, next to its source, with no render
@@ -22,8 +22,8 @@
  *  a converted file take the original's place without changing how the item
  *  sounds, and what keeps the conversion reversible.
  *
- *  The FuMa conversion deliberately does NOT use libambix's AMBIX_MATRIX_FUMA,
- *  which routes first-order X into the ambiX Z slot and adds Condon-Shortley
+ *  The FuMa conversion uses src/fuma.cpp rather than a library matrix:
+ *  libambix's AMBIX_MATRIX_FUMA routes first-order X into the ambiX Z slot and adds Condon-Shortley
  *  signs the ambiX paper rejects. src/fuma.cpp implements the paper's matrix
  *  instead, with tests/test_fuma.cpp pinning it down. FuMa is only defined to
  *  third order, so 16 channels is the ceiling.
@@ -44,7 +44,7 @@
 #include "reaper_plugin.h"
 #include "resource.h"
 
-#include <ambix/ambix.h>
+#include "ambix_io.h"
 
 #include "fuma.h"
 #include "compression_presets.h"
@@ -248,7 +248,7 @@ struct ConvertJob
 
   /* state for the entry in progress */
   AudioAccessor            *accessor;
-  ambix_t                  *fh;
+  ambixfile::Writer         writer;
   std::vector<double>       matrix;    /* [outChannels][sourceChannels] */
   double                    pos;
   std::vector<double>       inBuf;
@@ -263,7 +263,7 @@ struct ConvertJob
 
   ConvertJob() : cur(0), fuma(false), wavpack(true), wavpackBits(0.f), overwrite(false),
                title("ambiX"),
-                 accessor(NULL), fh(NULL), pos(0.0),
+                 accessor(NULL), pos(0.0),
                  totalSeconds(0.0), doneSeconds(0.0),
                  cancelled(false), finished(false) {}
 };
@@ -327,10 +327,14 @@ static void JobCloseEntry(ConvertJob &job, bool keep)
 {
   ConvertEntry &e = job.entries[job.cur];
 
-  if (job.fh)
+  if (job.writer.isOpen())
   {
-    ambix_close(job.fh);
-    job.fh = NULL;
+    /* a file that could not be completed is not kept either */
+    if (job.writer.close() != ambixfile::Status::Ok && keep)
+    {
+      keep = false;
+      if (!e.skipReason) e.skipReason = "write failed (disk full?)";
+    }
     if (!keep && !e.outPath.empty()) remove(e.outPath.c_str());
   }
   job.matrix.clear();
@@ -377,34 +381,25 @@ static bool JobOpenEntry(ConvertJob &job)
     }
   }
 
-  ambix_info_t ainfo;
-  memset(&ainfo, 0, sizeof(ainfo));
-  ainfo.fileformat    = AMBIX_BASIC;
-  ainfo.ambichannels  = (uint32_t)e.outChannels;
-  ainfo.extrachannels = 0;
-  ainfo.samplerate    = (double)e.srate;
+  ambixfile::WriterConfig config;
+  config.ambiChannels = (uint32_t)e.outChannels; /* a full set: basic format */
+  config.sampleRate   = (double)e.srate;
   /* Float32 keeps the conversion lossless for anything REAPER hands us and
    * avoids a clipping decision on material that may legitimately exceed 0 dBFS
    * (an ambisonic W channel routinely does). */
-  ainfo.sampleformat  = AMBIX_SAMPLEFORMAT_FLOAT32;
-
-  ambix_filemode_t mode = AMBIX_WRITE;
-  if (job.wavpack) mode = (ambix_filemode_t)(mode | AMBIX_USE_WAVPACK);
-
-  job.fh = ambix_open(e.outPath.c_str(), mode, &ainfo);
-  if (!job.fh)
+  config.sampleFormat = ambixfile::SampleFormat::Float32;
+  if (job.wavpack)
   {
-    e.skipReason = "libambix could not create the output file";
-    JobCloseEntry(job, false);
-    return false;
+    config.container = ambixfile::Container::WavPack;
+    /* > 0 selects lossy mode; the value was already clamped into WavPack's
+     * range when the options were read. */
+    config.wavpackHybridBits = job.wavpackBits;
+    config.wavpackThreads = AmbixWavPackThreads();
   }
 
-  /* Lossy mode is configured before the first write; the value was already
-   * clamped into WavPack's range when the options were read. */
-  if (job.wavpack && job.wavpackBits > 0.f &&
-      ambix_set_wavpack_bitrate(job.fh, job.wavpackBits) != AMBIX_ERR_SUCCESS)
+  if (job.writer.open(e.outPath.c_str(), config) != ambixfile::Status::Ok)
   {
-    e.skipReason = "libambix refused the WavPack bit rate";
+    e.skipReason = "could not create the output file";
     JobCloseEntry(job, false);
     return false;
   }
@@ -466,7 +461,7 @@ static bool JobStep(ConvertJob &job, double budgetSeconds)
         toWrite = &job.outBuf[0];
       }
 
-      if (ambix_writef_float64(job.fh, toWrite, NULL, frames) != frames)
+      if (job.writer.write(toWrite, frames) != frames)
       {
         e.skipReason = "write failed (disk full?)";
         JobCloseEntry(job, false);
@@ -483,8 +478,8 @@ static bool JobStep(ConvertJob &job, double budgetSeconds)
 
     if (!e.skipReason)
     {
-      e.written = true;
-      JobCloseEntry(job, true);
+      JobCloseEntry(job, true);      /* may still fail: sets skipReason */
+      e.written = !e.skipReason;
     }
     ++job.cur;
   }

@@ -13,11 +13,11 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Configure
       run: |
-        # BUILD_PLUGIN=OFF keeps this configure clear of WDL/WavPack/libambix,
+        # BUILD_PLUGIN=OFF keeps this configure clear of WDL/WavPack/ambixfile,
         # so the job does not need a submodule checkout to run the tests.
         cmake -S . -B _build_tests -DREAPER_AMBIX_BUILD_TESTS=ON \
               -DREAPER_AMBIX_BUILD_PLUGIN=OFF
@@ -51,7 +51,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         submodules: recursive
 

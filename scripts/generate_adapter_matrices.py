@@ -3,8 +3,8 @@
 Generate the ambiX EXTENDED-format adaptor matrices in src/adaptermatrices/.
 
 An adaptor matrix A (L x C, L = (N+1)^2) expands the C stored channels to the
-full ACN/SN3D set: full = A . reduced. libambix derives the reduction matrix
-as pinv(A) when writing. Both shipped families have orthonormal columns
+full ACN/SN3D set: full = A . reduced. The render sink derives the reduction
+matrix as pinv(A) when writing. Both shipped families have orthonormal columns
 (A^T A = I), so pinv(A) = A^T, pinv(A) . A = I, and reduce -> expand is an
 orthogonal projector. Re-applying it any number of times loses nothing beyond
 the first pass (tests/test_adapter_matrices.cpp checks this).
